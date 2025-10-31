@@ -1,6 +1,7 @@
 """Tests for TokenRegistry."""
 
 import json
+import platform
 
 import pytest
 
@@ -43,11 +44,12 @@ class TestTokenRegistry:
         # Check registry file was created
         assert temp_registry_path.exists()
 
-        # Check file permissions
-        import stat
+        # Check file permissions (Unix only)
+        if platform.system() != "Windows":
+            import stat
 
-        mode = temp_registry_path.stat().st_mode
-        assert stat.S_IMODE(mode) == 0o600
+            mode = temp_registry_path.stat().st_mode
+            assert stat.S_IMODE(mode) == 0o600
 
         # Check content
         with open(temp_registry_path) as f:
@@ -80,8 +82,12 @@ class TestTokenRegistry:
 
     def test_list_tokens(self, registry):
         """Test listing all tokens."""
+        import time
+
         registry.register("token1", TokenType.BEARER, "ns1")
+        time.sleep(0.01)  # Ensure different timestamps
         registry.register("token2", TokenType.API_KEY, "ns2")
+        time.sleep(0.01)  # Ensure different timestamps
         registry.register("token3", TokenType.BEARER, "ns1")
 
         tokens = registry.list_tokens()

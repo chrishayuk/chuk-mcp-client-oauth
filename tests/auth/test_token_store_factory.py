@@ -58,8 +58,8 @@ class TestTokenStoreFactoryCreate:
         # Should create some backend (likely encrypted file as fallback)
         assert store is not None
 
-    @patch("sys.platform", "darwin")
-    def test_create_keychain_backend_on_macos(self):
+    @patch("platform.system", return_value="Darwin")
+    def test_create_keychain_backend_on_macos(self, mock_platform):
         """Test creating keychain backend on macOS."""
         try:
             store = TokenStoreFactory.create(

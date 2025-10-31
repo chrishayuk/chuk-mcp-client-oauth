@@ -1,5 +1,6 @@
 """Tests for TokenManager with registry integration."""
 
+import platform
 from pathlib import Path
 from unittest.mock import patch
 
@@ -298,18 +299,18 @@ class TestBackendFactoryIntegration:
         )
         assert manager.token_store is not None
 
-    @patch("sys.platform", "darwin")
-    def test_keychain_backend_on_macos(self, temp_dirs):
+    @patch("platform.system", return_value="Darwin")
+    def test_keychain_backend_on_macos(self, mock_platform, temp_dirs):
         """Test that macOS uses keychain backend by default."""
         try:
-            from chuk_mcp_client_oauth.stores.keychain_store import KeychainTokenStore  # noqa: F401
+            from chuk_mcp_client_oauth.stores.keychain_store import KeychainTokenStore
 
             manager = TokenManager(
                 token_dir=temp_dirs["token_dir"],
                 backend=TokenStoreBackend.KEYCHAIN,
             )
-            # May fall back to encrypted file if keyring not available
-            assert manager.token_store is not None
+            # Should use keychain on macOS
+            assert isinstance(manager.token_store, KeychainTokenStore)
         except ImportError:
             pytest.skip("keyring library not available")
 
@@ -398,11 +399,12 @@ class TestClientRegistration:
         reg_path = token_manager._get_client_registration_path("test-server")
         assert reg_path.exists()
 
-        # Verify file permissions
-        import stat
+        # Verify file permissions (Unix only)
+        if platform.system() != "Windows":
+            import stat
 
-        mode = reg_path.stat().st_mode
-        assert stat.S_IMODE(mode) == 0o600
+            mode = reg_path.stat().st_mode
+            assert stat.S_IMODE(mode) == 0o600
 
     def test_load_client_registration(self, token_manager):
         """Test loading client registration."""

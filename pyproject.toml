@@ -27,6 +27,9 @@ dependencies = [
     "cryptography>=41.0.0",
 ]
 
+[project.scripts]
+chuk-oauth = "chuk_mcp_client_oauth.cli:main"
+
 [project.optional-dependencies]
 vault = ["hvac>=1.0.0"]
 keychain = []  # macOS built-in

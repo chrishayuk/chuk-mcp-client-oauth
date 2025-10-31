@@ -329,23 +329,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Authenticate with Notion MCP
-  uv run examples/oauth_cli.py auth notion-mcp https://mcp.notion.com/mcp
+  # Using uvx (no installation required)
+  uvx chuk-mcp-client-oauth auth notion-mcp https://mcp.notion.com/mcp
+  uvx chuk-mcp-client-oauth list
+  uvx chuk-mcp-client-oauth get notion-mcp
+  uvx chuk-mcp-client-oauth test notion-mcp
+  uvx chuk-mcp-client-oauth logout notion-mcp --url https://mcp.notion.com/mcp
+  uvx chuk-mcp-client-oauth clear notion-mcp
 
-  # Get token for a server
-  uv run examples/oauth_cli.py get notion-mcp
-
-  # List all stored tokens
-  uv run examples/oauth_cli.py list
-
-  # Test connection
-  uv run examples/oauth_cli.py test notion-mcp
-
-  # Logout and revoke tokens with server (recommended)
-  uv run examples/oauth_cli.py logout notion-mcp --url https://mcp.notion.com/mcp
-
-  # Clear tokens locally only (no server notification)
-  uv run examples/oauth_cli.py clear notion-mcp
+  # Or after installation: chuk-oauth <command>
+  chuk-oauth auth notion-mcp https://mcp.notion.com/mcp
+  chuk-oauth list
         """,
     )
 

@@ -449,3 +449,196 @@ class TestOAuthHandler:
             assert tokens.access_token == mock_tokens.access_token
             # Verify client registration was loaded
             assert mock_client._client_registration == registration
+
+    async def test_logout_with_server_url(self, handler, valid_tokens):
+        """Test logout with server URL (token revocation)."""
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+
+        # Store tokens and registration
+        handler.token_manager.save_tokens(server_name, valid_tokens)
+        handler._active_tokens[server_name] = valid_tokens
+
+        from chuk_mcp_client_oauth.mcp_oauth import DynamicClientRegistration
+
+        registration = DynamicClientRegistration(client_id="test-client")
+        handler.token_manager.save_client_registration(server_name, registration)
+
+        with patch(
+            "chuk_mcp_client_oauth.oauth_handler.MCPOAuthClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.discover_authorization_server = AsyncMock()
+            mock_client.revoke_token = AsyncMock(return_value=True)
+            mock_client._client_registration = registration
+            mock_client_class.return_value = mock_client
+
+            await handler.logout(server_name, server_url)
+
+            # Verify revoke_token was called for both tokens
+            assert mock_client.revoke_token.call_count == 2
+            calls = mock_client.revoke_token.call_args_list
+            # First call should be refresh token
+            assert calls[0][0][0] == "test_refresh_token"
+            assert calls[0][1]["token_type_hint"] == "refresh_token"
+            # Second call should be access token
+            assert calls[1][0][0] == "test_access_token"
+            assert calls[1][1]["token_type_hint"] == "access_token"
+
+            # Verify tokens cleared from memory and disk
+            assert server_name not in handler._active_tokens
+            assert not handler.token_manager.has_valid_tokens(server_name)
+            # Verify registration deleted
+            assert handler.token_manager.load_client_registration(server_name) is None
+
+    async def test_logout_without_server_url(self, handler, valid_tokens):
+        """Test logout without server URL (local cleanup only)."""
+        server_name = "test-server"
+
+        # Store tokens
+        handler.token_manager.save_tokens(server_name, valid_tokens)
+        handler._active_tokens[server_name] = valid_tokens
+
+        await handler.logout(server_name)
+
+        # Verify tokens cleared locally
+        assert server_name not in handler._active_tokens
+        assert not handler.token_manager.has_valid_tokens(server_name)
+
+    async def test_logout_with_revocation_failure(self, handler, valid_tokens):
+        """Test logout when token revocation fails."""
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+
+        # Store tokens
+        handler.token_manager.save_tokens(server_name, valid_tokens)
+
+        with patch(
+            "chuk_mcp_client_oauth.oauth_handler.MCPOAuthClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.discover_authorization_server = AsyncMock()
+            mock_client.revoke_token = AsyncMock(
+                side_effect=Exception("Revocation failed")
+            )
+            mock_client._client_registration = None
+            mock_client_class.return_value = mock_client
+
+            # Should not raise, just clear locally
+            await handler.logout(server_name, server_url)
+
+            # Verify tokens still cleared locally
+            assert server_name not in handler._active_tokens
+            assert not handler.token_manager.has_valid_tokens(server_name)
+
+    async def test_logout_nonexistent_tokens(self, handler):
+        """Test logout when no tokens exist."""
+        server_name = "nonexistent-server"
+
+        # Should not raise
+        await handler.logout(server_name)
+
+        # Should still be no tokens
+        assert server_name not in handler._active_tokens
+        assert not handler.token_manager.has_valid_tokens(server_name)
+
+    async def test_logout_tokens_only_in_memory(self, handler, valid_tokens):
+        """Test logout with tokens only in memory cache."""
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+
+        # Only in memory, not on disk
+        handler._active_tokens[server_name] = valid_tokens
+
+        with patch(
+            "chuk_mcp_client_oauth.oauth_handler.MCPOAuthClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.discover_authorization_server = AsyncMock()
+            mock_client.revoke_token = AsyncMock(return_value=True)
+            mock_client._client_registration = None
+            mock_client_class.return_value = mock_client
+
+            await handler.logout(server_name, server_url)
+
+            # Verify revocation was attempted
+            assert mock_client.revoke_token.called
+            # Verify cleared from memory
+            assert server_name not in handler._active_tokens
+
+    async def test_logout_tokens_only_on_disk(self, handler, valid_tokens):
+        """Test logout with tokens only on disk."""
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+
+        # Only on disk, not in memory
+        handler.token_manager.save_tokens(server_name, valid_tokens)
+
+        with patch(
+            "chuk_mcp_client_oauth.oauth_handler.MCPOAuthClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.discover_authorization_server = AsyncMock()
+            mock_client.revoke_token = AsyncMock(return_value=True)
+            mock_client._client_registration = None
+            mock_client_class.return_value = mock_client
+
+            await handler.logout(server_name, server_url)
+
+            # Verify revocation was attempted
+            assert mock_client.revoke_token.called
+            # Verify cleared from disk
+            assert not handler.token_manager.has_valid_tokens(server_name)
+
+    async def test_logout_without_refresh_token(self, handler):
+        """Test logout when tokens don't have refresh token."""
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+
+        # Tokens without refresh token
+        tokens_no_refresh = OAuthTokens(
+            access_token="test_access_token",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token=None,
+        )
+        handler.token_manager.save_tokens(server_name, tokens_no_refresh)
+
+        with patch(
+            "chuk_mcp_client_oauth.oauth_handler.MCPOAuthClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.discover_authorization_server = AsyncMock()
+            mock_client.revoke_token = AsyncMock(return_value=True)
+            mock_client._client_registration = None
+            mock_client_class.return_value = mock_client
+
+            await handler.logout(server_name, server_url)
+
+            # Should only revoke access token (no refresh token)
+            assert mock_client.revoke_token.call_count == 1
+            call_args = mock_client.revoke_token.call_args
+            assert call_args[0][0] == "test_access_token"
+            assert call_args[1]["token_type_hint"] == "access_token"
+
+    async def test_logout_discovery_fails(self, handler, valid_tokens):
+        """Test logout when authorization server discovery fails."""
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+
+        handler.token_manager.save_tokens(server_name, valid_tokens)
+
+        with patch(
+            "chuk_mcp_client_oauth.oauth_handler.MCPOAuthClient"
+        ) as mock_client_class:
+            mock_client = AsyncMock()
+            mock_client.discover_authorization_server = AsyncMock(
+                side_effect=Exception("Discovery failed")
+            )
+            mock_client_class.return_value = mock_client
+
+            # Should not raise, just clear locally
+            await handler.logout(server_name, server_url)
+
+            # Verify tokens still cleared
+            assert not handler.token_manager.has_valid_tokens(server_name)

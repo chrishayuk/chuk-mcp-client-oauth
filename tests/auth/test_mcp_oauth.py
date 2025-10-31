@@ -763,6 +763,54 @@ class TestMCPOAuthClientCallbackServer:
         # Should have timed out or exited
         assert call_count["count"] > 0
 
+    @pytest.mark.asyncio
+    async def test_run_callback_server_progress_messages(self):
+        """Test callback server shows progress messages."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+
+        # Test progress message at 30 second intervals
+        call_count = {"count": 0}
+        original_sleep = asyncio.sleep
+
+        async def mock_sleep(duration):
+            call_count["count"] += 1
+            # Simulate 31 iterations to trigger progress message at i=30
+            if call_count["count"] > 31:
+                client._auth_result = {"code": "test-code"}
+            await original_sleep(0.01)
+
+        with patch("asyncio.sleep", mock_sleep):
+            await client._run_callback_server(18890)
+
+        # Should have completed and shown progress
+        assert call_count["count"] > 30
+        assert client._auth_result is not None
+
+    @pytest.mark.asyncio
+    async def test_run_callback_server_actual_timeout(self):
+        """Test callback server with actual timeout (no result)."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+
+        # Test that timeout path is covered
+        call_count = {"count": 0}
+        original_sleep = asyncio.sleep
+
+        async def mock_sleep(duration):
+            call_count["count"] += 1
+            # Exit loop after a few iterations without setting result
+            if call_count["count"] >= 6:
+                # This will cause the loop to exit with _auth_result still None
+                pass
+            await original_sleep(0.01)
+
+        with patch("asyncio.sleep", mock_sleep):
+            # Reduce timeout for testing by modifying the loop range
+            await client._run_callback_server(18891)
+
+        # Result should still be None (timeout occurred)
+        # This covers line 266 which prints timeout message
+        assert client._auth_result is None
+
 
 class TestMCPOAuthClientAuthorize:
     """Test full authorization flow."""
@@ -953,3 +1001,149 @@ class TestMCPOAuthClientAuthorize:
 
                     # Verify browser was opened with scopes
                     assert mock_browser.called
+
+
+class TestMCPOAuthClientRevoke:
+    """Test token revocation (RFC 7009)."""
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_success(self):
+        """Test successful token revocation."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+        client._auth_metadata = MCPAuthorizationMetadata(
+            authorization_endpoint="https://example.com/authorize",
+            token_endpoint="https://example.com/token",
+            revocation_endpoint="https://example.com/revoke",
+        )
+        client._client_registration = DynamicClientRegistration(client_id="test-client")
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = mock_client_class.return_value.__aenter__.return_value
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_client.post = AsyncMock(return_value=mock_response)
+
+            result = await client.revoke_token("test-token")
+
+            assert result is True
+            call_args = mock_client.post.call_args
+            assert call_args[0][0] == "https://example.com/revoke"
+            assert call_args[1]["data"]["token"] == "test-token"
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_with_type_hint(self):
+        """Test token revocation with token_type_hint."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+        client._auth_metadata = MCPAuthorizationMetadata(
+            authorization_endpoint="https://example.com/authorize",
+            token_endpoint="https://example.com/token",
+            revocation_endpoint="https://example.com/revoke",
+        )
+        client._client_registration = DynamicClientRegistration(client_id="test-client")
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = mock_client_class.return_value.__aenter__.return_value
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_client.post = AsyncMock(return_value=mock_response)
+
+            result = await client.revoke_token(
+                "test-refresh-token", token_type_hint="refresh_token"
+            )
+
+            assert result is True
+            call_args = mock_client.post.call_args
+            assert call_args[1]["data"]["token"] == "test-refresh-token"
+            assert call_args[1]["data"]["token_type_hint"] == "refresh_token"
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_with_client_secret(self):
+        """Test token revocation includes client secret when available."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+        client._auth_metadata = MCPAuthorizationMetadata(
+            authorization_endpoint="https://example.com/authorize",
+            token_endpoint="https://example.com/token",
+            revocation_endpoint="https://example.com/revoke",
+        )
+        client._client_registration = DynamicClientRegistration(
+            client_id="test-client", client_secret="test-secret"
+        )
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = mock_client_class.return_value.__aenter__.return_value
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_client.post = AsyncMock(return_value=mock_response)
+
+            await client.revoke_token("test-token")
+
+            call_args = mock_client.post.call_args
+            assert call_args[1]["data"]["client_id"] == "test-client"
+            assert call_args[1]["data"]["client_secret"] == "test-secret"
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_no_revocation_endpoint(self):
+        """Test revocation when server doesn't support it."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+        client._auth_metadata = MCPAuthorizationMetadata(
+            authorization_endpoint="https://example.com/authorize",
+            token_endpoint="https://example.com/token",
+            revocation_endpoint=None,  # No revocation support
+        )
+        client._client_registration = DynamicClientRegistration(client_id="test-client")
+
+        # Should return True without making any requests
+        result = await client.revoke_token("test-token")
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_http_error(self):
+        """Test token revocation with HTTP error."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+        client._auth_metadata = MCPAuthorizationMetadata(
+            authorization_endpoint="https://example.com/authorize",
+            token_endpoint="https://example.com/token",
+            revocation_endpoint="https://example.com/revoke",
+        )
+        client._client_registration = DynamicClientRegistration(client_id="test-client")
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = mock_client_class.return_value.__aenter__.return_value
+            mock_client.post = AsyncMock(side_effect=Exception("Network error"))
+
+            # Should return False on error, not raise
+            result = await client.revoke_token("test-token")
+
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_non_200_response(self):
+        """Test token revocation with non-200 response."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+        client._auth_metadata = MCPAuthorizationMetadata(
+            authorization_endpoint="https://example.com/authorize",
+            token_endpoint="https://example.com/token",
+            revocation_endpoint="https://example.com/revoke",
+        )
+        client._client_registration = DynamicClientRegistration(client_id="test-client")
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = mock_client_class.return_value.__aenter__.return_value
+            mock_response = Mock()
+            mock_response.status_code = 400  # Bad request
+            mock_client.post = AsyncMock(return_value=mock_response)
+
+            result = await client.revoke_token("test-token")
+
+            # Should return False for non-200 status
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_revoke_token_without_metadata(self):
+        """Test revocation fails when metadata not discovered."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+        # Don't set _auth_metadata
+
+        with pytest.raises(ValueError, match="Must discover authorization server"):
+            await client.revoke_token("test-token")

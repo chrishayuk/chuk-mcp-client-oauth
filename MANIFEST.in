@@ -1,0 +1,15 @@
+# Include package metadata
+include LICENSE
+include README.md
+include pyproject.toml
+
+# Include source files
+recursive-include src *.py
+
+# Include type stubs
+recursive-include src *.pyi
+
+# Exclude test files and cache
+recursive-exclude tests *
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]

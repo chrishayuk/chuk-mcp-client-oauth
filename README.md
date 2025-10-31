@@ -145,6 +145,126 @@ This library automates **all of these steps**.
 
 ---
 
+## 📊 Flow Diagrams
+
+### Auth Code + PKCE (Desktop/CLI with Browser)
+
+This is the **primary flow** used by this library for interactive applications:
+
+```
+┌──────────────────┐        ┌──────────────┐         ┌──────────────────────┐        ┌───────────────┐
+│  MCP Client      │        │  User        │         │  OAuth 2.1 Server    │        │  MCP Server    │
+│  (CLI / Agent)   │        │  Browser     │         │  (Auth + Token)      │        │               │
+└──┬───────────────┘        └──────┬───────┘         └──────────┬───────────┘        └───────┬───────┘
+   │ 1) GET /.well-known/oauth-authorization-server            │                             │
+   ├──────────────────────────────────────────────────────────▶│                             │
+   │                                                           │ 2) Return endpoints         │
+   │◀───────────────────────────────────────────────────────────┤  (authorize, token, etc.)  │
+   │                                                           │                             │
+   │ 3) Build Auth URL (PKCE: code_challenge)                  │                             │
+   │ 4) Open browser ----------------------------------------▶ │                             │
+   │                                                           │ 5) User login + consent     │
+   │                                                           │◀────────────────────────────┤
+   │                                                           │ 6) Redirect with ?code=...  │
+   │◀───────────────────────────────────────────────────────────┤  to http://127.0.0.1:PORT   │
+   │ 7) Local redirect handler captures code + state           │                             │
+   │ 8) POST /token (code + code_verifier)                     │                             │
+   ├──────────────────────────────────────────────────────────▶│                             │
+   │                                                           │ 9) access_token + refresh   │
+   │◀───────────────────────────────────────────────────────────┤    (expires_in, scopes…)   │
+   │ 10) Store tokens securely (keyring / pluggable)           │                             │
+   │                                                           │                             │
+   │ 11) Connect to MCP with Authorization: Bearer <token>     │                             │
+   ├────────────────────────────────────────────────────────────────────────────────────────▶│
+   │                                                           │                             │ 12) Session OK
+   │◀────────────────────────────────────────────────────────────────────────────────────────┤
+   │                                                           │                             │
+   │ 13) (When expired) POST /token (refresh_token)            │                             │
+   ├──────────────────────────────────────────────────────────▶│                             │
+   │                                                           │ 14) New access/refresh      │
+   │◀───────────────────────────────────────────────────────────┤     -> update secure store │
+   │                                                           │                             │
+```
+
+**Legend:**
+- **PKCE**: `code_challenge = SHA256(code_verifier)` (sent at authorize), `code_verifier` (sent at token)
+- Tokens are stored in OS keychain (or pluggable secure backend)
+- MCP requests carry `Authorization: Bearer <access_token>`
+
+### Device Code Flow (Headless TTY / SSH Agents)
+
+**Coming in v0.2.0** - Perfect for SSH-only boxes, CI runners, and background agents:
+
+```
+┌──────────────────┐                          ┌──────────────────────┐                          ┌───────────────┐
+│  MCP Client      │                          │  OAuth 2.1 Server    │                          │  MCP Server    │
+│  (Headless)      │                          │  (Device + Token)    │                          │               │
+└──┬───────────────┘                          └──────────┬───────────┘                          └───────┬───────┘
+   │ 1) POST /device_authorization (client_id, scope)            │                                         │
+   ├────────────────────────────────────────────────────────────▶│                                         │
+   │                                                            │ 2) device_code, user_code, verify_uri   │
+   │◀────────────────────────────────────────────────────────────┤    expires_in, interval                 │
+   │ 3) Show: "Go to VERIFY_URI and enter USER_CODE"            │                                         │
+   │                                                            │                                         │
+   │                (User on any device)                         │                                         │
+   │                         ┌──────────────┐                    │                                         │
+   │                         │  User        │ 4) Visit verify URI│                                         │
+   │                         │  Browser     │ ◀──────────────────▶│                                         │
+   │                         └──────┬───────┘ 5) Enter user code │                                         │
+   │                                                            │ 6) Consent + login done                  │
+   │                                                            │                                         │
+   │ 7) Poll POST /token (device_code, grant_type=device_code)  │                                         │
+   ├────────────────────────────────────────────────────────────▶│                                         │
+   │ (repeat every `interval` seconds until authorized)         │                                         │
+   │◀────────────────────────────────────────────────────────────┤ 8) access_token + refresh               │
+   │ 9) Store tokens securely                                   │                                         │
+   │ 10) Connect MCP: Authorization: Bearer <token>             │                                         │
+   ├─────────────────────────────────────────────────────────────────────────────────────────────────────▶│
+   │                                                                                                     │ 11) Session OK
+   │◀─────────────────────────────────────────────────────────────────────────────────────────────────────┤
+   │ 12) Refresh on expiry → POST /token (refresh_token)         │                                        │
+   ├────────────────────────────────────────────────────────────▶│                                        │
+   │◀────────────────────────────────────────────────────────────┤ New tokens → update store              │
+```
+
+**When to use Device Code Flow:**
+- **SSH-only environments** - No browser available on the target machine
+- **CI/CD pipelines** - Automated builds need OAuth without interactive login
+- **Background agents** - Services running without user interaction
+- **Shared/headless servers** - Multiple users, no desktop environment
+
+### How Tokens Attach to MCP Requests
+
+> **Whiteboard view:** The client does discovery, performs OAuth (Auth Code + PKCE or Device Code), stores tokens safely, and automatically attaches `Authorization: Bearer <token>` to **every MCP handshake and request**, refreshing silently when needed.
+
+**HTTP Requests:**
+```http
+GET /mcp/api/resources HTTP/1.1
+Host: mcp.example.com
+Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+Content-Type: application/json
+```
+
+**Server-Sent Events (SSE):**
+```http
+GET /mcp/events HTTP/1.1
+Host: mcp.example.com
+Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+Accept: text/event-stream
+Connection: keep-alive
+```
+
+**WebSocket:**
+```http
+GET /mcp/ws HTTP/1.1
+Host: mcp.example.com
+Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+Upgrade: websocket
+Connection: Upgrade
+```
+
+---
+
 ## 🔍 OAuth Discovery (How Your App Finds OAuth Endpoints)
 
 ### What is OAuth Discovery?
@@ -607,23 +727,50 @@ manager = TokenManager(
 
 ## 🛠️ CLI Tool (Quick Testing)
 
-The library includes a CLI tool for testing OAuth flows:
+The library includes a CLI tool for testing OAuth flows. You can run it with `uvx` (no installation required) or install it locally:
+
+### Using uvx (Recommended - No Installation)
 
 ```bash
 # Authenticate with a server
-uv run examples/oauth_cli.py auth notion-mcp https://mcp.notion.com/mcp
+uvx chuk-mcp-client-oauth auth notion-mcp https://mcp.notion.com/mcp
 
 # List all stored tokens
-uv run examples/oauth_cli.py list
+uvx chuk-mcp-client-oauth list
 
 # Get token details (safely redacted)
-uv run examples/oauth_cli.py get notion-mcp
+uvx chuk-mcp-client-oauth get notion-mcp
 
 # Test connection
-uv run examples/oauth_cli.py test notion-mcp
+uvx chuk-mcp-client-oauth test notion-mcp
 
-# Clear tokens
-uv run examples/oauth_cli.py clear notion-mcp
+# Logout and revoke tokens with server (recommended)
+uvx chuk-mcp-client-oauth logout notion-mcp --url https://mcp.notion.com/mcp
+
+# Clear tokens locally only (no server notification)
+uvx chuk-mcp-client-oauth clear notion-mcp
+```
+
+### Using installed CLI
+
+```bash
+# Install the package first
+uv add chuk-mcp-client-oauth
+
+# Then use the chuk-oauth command
+chuk-oauth auth notion-mcp https://mcp.notion.com/mcp
+chuk-oauth list
+chuk-oauth get notion-mcp
+chuk-oauth test notion-mcp
+chuk-oauth logout notion-mcp --url https://mcp.notion.com/mcp
+chuk-oauth clear notion-mcp
+```
+
+### Using examples directory
+
+```bash
+# Or run from examples directory
+uv run examples/oauth_cli.py auth notion-mcp https://mcp.notion.com/mcp
 ```
 
 **Example output:**
@@ -734,10 +881,30 @@ handler = OAuthHandler(token_manager=None)  # None = auto-detect storage
   ```
 
 - **`clear_tokens(server_name)`**
-  Remove tokens from cache and storage
+  Remove tokens from cache and storage (local only)
   ```python
   handler.clear_tokens("my-server")
   ```
+
+- **`logout(server_name, server_url=None)`**
+  Logout and revoke tokens with server (RFC 7009)
+  ```python
+  # Revoke tokens with server (recommended)
+  await handler.logout(
+      server_name="my-server",
+      server_url="https://mcp.example.com/mcp"
+  )
+
+  # Clear tokens locally only (no server notification)
+  await handler.logout("my-server")
+  ```
+  **Note**: When `server_url` is provided, the library will:
+  1. Attempt to revoke the refresh and access tokens with the server
+  2. Clear tokens from memory cache
+  3. Delete tokens from secure storage
+  4. Remove client registration
+
+  If revocation fails (network error, server doesn't support it), tokens are still cleared locally.
 
 ### MCPOAuthClient (Low-Level API)
 
@@ -758,6 +925,7 @@ client = MCPOAuthClient(
 - **`register_client(client_name, redirect_uris)`** - RFC 7591 registration
 - **`authorize(scopes)`** - Full authorization flow with PKCE
 - **`refresh_token(refresh_token)`** - Get new access token
+- **`revoke_token(token, token_type_hint=None)`** - Revoke token with server (RFC 7009)
 
 ### TokenManager
 
@@ -810,6 +978,351 @@ tokens = OAuthTokens(
 - ✅ **Automatic Expiration** - Tracks and validates token expiration
 - ✅ **No Plaintext Storage** - Never stores tokens in plaintext
 - ✅ **Scope Validation** - Ensures requested scopes are granted
+
+---
+
+## 📊 Support Matrix
+
+### OAuth Flows & Features
+
+| Feature | Support | Notes |
+|---------|---------|-------|
+| **Authorization Code + PKCE** | ✅ Full | Primary flow (RFC 6749 + RFC 7636) |
+| **Refresh Tokens** | ✅ Full | Automatic token refresh |
+| **Dynamic Client Registration** | ✅ Full | RFC 7591 |
+| **OAuth Discovery** | ✅ Full | RFC 8414 |
+| **Device Code Flow** | 🚧 Planned | For headless/CI environments |
+| **Client Credentials** | ❌ Out of scope | Server-to-server only |
+
+### Platforms & Storage
+
+| Platform | Python | Storage Backend | Auto-Detected | Fallback |
+|----------|--------|----------------|---------------|----------|
+| **macOS** | 3.10+ | Keychain | ✅ | Encrypted File |
+| **Linux** | 3.10+ | Secret Service (GNOME Keyring/KWallet) | ✅ | Encrypted File |
+| **Windows** | 3.10+ | Credential Manager | ✅ | Encrypted File |
+| **Docker/CI** | 3.10+ | Encrypted File | ✅ | N/A |
+| **Vault** | 3.10+ | HashiCorp Vault | Manual | Encrypted File |
+
+### MCP Integration
+
+| Feature | Support | How It Works |
+|---------|---------|--------------|
+| **Bearer Token Injection** | ✅ | `Authorization: Bearer <token>` header |
+| **HTTP Requests** | ✅ | Standard HTTP headers |
+| **SSE (Server-Sent Events)** | ✅ | Auth header in initial connection |
+| **WebSocket** | ✅ | Auth header in handshake |
+
+**How tokens are attached to MCP requests:**
+```python
+# The library adds this header to all MCP HTTP requests:
+headers = {
+    "Authorization": f"Bearer {access_token}",
+    "Content-Type": "application/json"
+}
+
+# For SSE/WebSocket, the header is included in the initial connection:
+# GET /mcp/events HTTP/1.1
+# Authorization: Bearer <token>
+# Connection: keep-alive
+```
+
+---
+
+## 🔒 Security Model & Threat Considerations
+
+### PKCE Flow Security
+
+**What is PKCE?**
+PKCE (Proof Key for Code Exchange) prevents authorization code interception attacks. Here's how this library implements it:
+
+1. **Code Verifier Generation**
+   - Random 128-character string generated for each flow
+   - Stored in memory only (never written to disk)
+   - Destroyed after token exchange
+
+2. **Code Challenge**
+   - SHA-256 hash of verifier sent to authorization endpoint
+   - Server validates the verifier matches during token exchange
+   - Prevents stolen auth codes from being used
+
+```python
+# Behind the scenes (automatic):
+code_verifier = secrets.token_urlsafe(96)  # 128 chars base64url
+code_challenge = base64url(sha256(code_verifier))
+
+# Authorization request includes:
+# code_challenge=<hash>&code_challenge_method=S256
+
+# Token exchange includes:
+# code_verifier=<original> (server validates hash matches)
+```
+
+### Token Storage Security
+
+**Encryption at Rest:**
+```python
+# Encrypted File Storage (fallback):
+- Algorithm: AES-256-GCM (authenticated encryption)
+- Key Derivation: PBKDF2-HMAC-SHA256 (600,000 iterations)
+- Salt: 32 bytes random per file
+- IV: 16 bytes random per encryption
+- Tag: 16 bytes authentication tag
+
+# File structure:
+# [32-byte salt][16-byte IV][encrypted data][16-byte tag]
+```
+
+**Access Control:**
+- **Unix**: Files created with mode `0600` (owner read/write only)
+- **Windows**: Protected by Windows account credentials
+- **Keychain**: Uses system keychain access controls (requires user authentication)
+
+**Token Lifecycle:**
+```
+1. Access Token Generated → Stored encrypted
+2. Access Token Used → Retrieved, decrypted in memory
+3. Access Token Expires → Automatic refresh
+4. Refresh Token Used → New tokens stored, old deleted
+5. User Logout → All tokens deleted from storage
+```
+
+### Redirect URI Strategy
+
+**Default Configuration:**
+```python
+# Loopback address (RFC 8252 - OAuth for Native Apps)
+redirect_uri = "http://127.0.0.1:<random_port>/callback"
+
+# Why this is secure:
+# ✅ Random port prevents port hijacking
+# ✅ 127.0.0.1 (not localhost) prevents DNS rebinding
+# ✅ CSRF state parameter validates redirect
+# ✅ PKCE verifier prevents code interception
+```
+
+**CSRF Protection:**
+```python
+# State parameter (RFC 6749):
+state = secrets.token_urlsafe(32)  # 256 bits of entropy
+
+# Sent in authorization request, validated on callback
+# Prevents cross-site request forgery
+```
+
+**Custom Redirect URI (Advanced):**
+```python
+# For production apps, use custom URI scheme:
+client = MCPOAuthClient(
+    server_url="https://mcp.example.com/mcp",
+    redirect_uri="myapp://oauth/callback"  # Registered scheme
+)
+```
+
+### Security Checklist
+
+When deploying this library:
+
+- [ ] **Use platform-native storage** (Keychain/Credential Manager) in production
+- [ ] **Enable encryption** for file storage (always provide password)
+- [ ] **Validate server certificates** (don't disable SSL verification)
+- [ ] **Use PKCE** (automatically enabled, don't disable)
+- [ ] **Rotate secrets** (configure token refresh intervals on server)
+- [ ] **Monitor token usage** (implement logging/audit trails)
+- [ ] **Limit scopes** (request minimum necessary permissions)
+- [ ] **Implement logout** (revoke tokens when done)
+
+### What's NOT Stored
+
+For security, these are **never** written to disk:
+
+- ❌ **PKCE code verifier** (memory only during flow)
+- ❌ **CSRF state parameter** (memory only during flow)
+- ❌ **User passwords** (never handled by this library)
+- ❌ **Plaintext tokens** (always encrypted in file storage)
+
+---
+
+## ⚠️ Error Handling & Recovery
+
+### Error Taxonomy
+
+The library uses specific exceptions for different failure modes:
+
+```python
+from chuk_mcp_client_oauth.exceptions import (
+    OAuthError,              # Base exception
+    DiscoveryError,          # Discovery endpoint failed
+    RegistrationError,       # Client registration failed
+    AuthorizationError,      # User denied consent
+    TokenExchangeError,      # Token exchange failed
+    TokenRefreshError,       # Token refresh failed
+    TokenStorageError,       # Storage backend failed
+)
+```
+
+### Common Errors & Solutions
+
+#### Discovery Failures
+
+**Error:** `DiscoveryError: Failed to fetch discovery document`
+
+**Causes:**
+- Server doesn't support OAuth discovery
+- Network connectivity issues
+- Invalid server URL
+
+**Recovery:**
+```python
+try:
+    await handler.ensure_authenticated_mcp(
+        server_name="my-server",
+        server_url="https://mcp.example.com/mcp"
+    )
+except DiscoveryError as e:
+    print(f"❌ Discovery failed: {e}")
+
+    # Fallback: Manual configuration
+    from chuk_mcp_client_oauth import MCPOAuthClient
+    client = MCPOAuthClient(
+        server_url="https://mcp.example.com/mcp",
+        authorization_url="https://mcp.example.com/oauth/authorize",  # manual
+        token_url="https://mcp.example.com/oauth/token",  # manual
+        redirect_uri="http://127.0.0.1:8080/callback"
+    )
+```
+
+#### Authorization Failures
+
+**Error:** `AuthorizationError: User denied consent`
+
+**Causes:**
+- User clicked "Deny" in browser
+- User closed browser window
+- Timeout waiting for callback
+
+**Recovery:**
+```python
+try:
+    tokens = await client.authorize(scopes=["read", "write"])
+except AuthorizationError as e:
+    if "denied" in str(e).lower():
+        print("❌ User denied access")
+        print("ℹ️  Please approve the application to continue")
+        # Retry with user guidance
+    elif "timeout" in str(e).lower():
+        print("❌ Authorization timeout")
+        print("ℹ️  Please complete the flow within 5 minutes")
+        # Retry with longer timeout
+```
+
+#### Token Refresh Failures
+
+**Error:** `TokenRefreshError: Refresh token expired`
+
+**Causes:**
+- Refresh token expired (server-configured TTL)
+- Refresh token revoked by server
+- Network error during refresh
+
+**Recovery:**
+```python
+try:
+    new_tokens = await client.refresh_token(old_tokens.refresh_token)
+except TokenRefreshError as e:
+    print(f"❌ Refresh failed: {e}")
+
+    # Clear old tokens and re-authenticate
+    handler.clear_tokens("my-server")
+    tokens = await handler.ensure_authenticated_mcp(
+        server_name="my-server",
+        server_url=server_url
+    )
+```
+
+#### Storage Failures
+
+**Error:** `TokenStorageError: Failed to store token`
+
+**Causes:**
+- Permission denied on storage directory
+- Keychain locked (macOS)
+- Disk full
+- Encryption password wrong
+
+**Recovery:**
+```python
+from chuk_mcp_client_oauth import TokenManager, TokenStoreBackend
+from pathlib import Path
+
+try:
+    manager = TokenManager(backend=TokenStoreBackend.AUTO)
+    manager.save_tokens("server", tokens)
+except TokenStorageError as e:
+    print(f"❌ Storage failed: {e}")
+
+    # Fallback to encrypted file with explicit password
+    import tempfile
+    fallback_manager = TokenManager(
+        backend=TokenStoreBackend.ENCRYPTED_FILE,
+        token_dir=Path(tempfile.mkdtemp()),
+        password="explicit-password-123"
+    )
+    fallback_manager.save_tokens("server", tokens)
+```
+
+### Retry Strategies
+
+**Automatic Retry (Built-in):**
+```python
+# Token refresh automatically retries with exponential backoff
+# 3 attempts: 1s, 2s, 4s delays
+tokens = await handler.ensure_authenticated_mcp(...)
+# ↑ Handles token refresh internally with retries
+```
+
+**Manual Retry (Your Code):**
+```python
+import asyncio
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10)
+)
+async def connect_with_retry(server_name: str, server_url: str):
+    """Connect with automatic retries on network errors."""
+    handler = OAuthHandler()
+    return await handler.ensure_authenticated_mcp(
+        server_name=server_name,
+        server_url=server_url
+    )
+
+# Usage
+try:
+    tokens = await connect_with_retry("my-server", "https://mcp.example.com/mcp")
+except Exception as e:
+    print(f"❌ Failed after 3 retries: {e}")
+```
+
+### Debugging
+
+**Enable Debug Logging:**
+```python
+import logging
+
+# Enable library debug logs
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger("chuk_mcp_client_oauth")
+logger.setLevel(logging.DEBUG)
+
+# Now you'll see:
+# DEBUG:chuk_mcp_client_oauth:Discovering OAuth server at https://...
+# DEBUG:chuk_mcp_client_oauth:Found authorization_endpoint: https://...
+# DEBUG:chuk_mcp_client_oauth:Registering client with name: ...
+# DEBUG:chuk_mcp_client_oauth:Starting local callback server on port 8080
+# ...
+```
 
 ---
 

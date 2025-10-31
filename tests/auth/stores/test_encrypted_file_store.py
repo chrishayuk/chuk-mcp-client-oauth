@@ -1,5 +1,6 @@
 """Tests for token storage backends."""
 
+import platform
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,7 +64,9 @@ class TestEncryptedFileTokenStore:
         _ = EncryptedFileTokenStore(token_dir=token_dir, password="test-password")
 
         assert token_dir.exists()
-        assert token_dir.stat().st_mode & 0o777 == 0o700
+        # Only check permissions on Unix systems
+        if platform.system() != "Windows":
+            assert token_dir.stat().st_mode & 0o777 == 0o700
 
     def test_store_and_retrieve_token(self, store, sample_tokens):
         """Test storing and retrieving OAuth tokens."""
@@ -183,11 +186,12 @@ class TestEncryptedFileTokenStore:
         safe_name = store._sanitize_name(server_name)
         file_path = store.token_dir / f"{safe_name}.enc"
 
-        # Check file permissions are user-only read/write
-        import stat
+        # Check file permissions are user-only read/write (Unix only)
+        if platform.system() != "Windows":
+            import stat
 
-        mode = file_path.stat().st_mode
-        assert stat.S_IMODE(mode) == 0o600
+            mode = file_path.stat().st_mode
+            assert stat.S_IMODE(mode) == 0o600
 
     def test_store_generic(self, store):
         """Test generic token storage."""

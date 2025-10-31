@@ -31,6 +31,7 @@ class MCPAuthorizationMetadata(BaseModel):
     authorization_endpoint: str
     token_endpoint: str
     registration_endpoint: Optional[str] = None
+    revocation_endpoint: Optional[str] = None  # RFC 7009
     scopes_supported: list[str] = Field(default_factory=list)
     response_types_supported: list[str] = Field(default_factory=lambda: ["code"])
     grant_types_supported: list[str] = Field(
@@ -331,6 +332,58 @@ class MCPOAuthClient:
             )
             response.raise_for_status()
             return OAuthTokens.model_validate(response.json())
+
+    async def revoke_token(
+        self, token: str, token_type_hint: Optional[str] = None
+    ) -> bool:
+        """
+        Revoke an access or refresh token (RFC 7009).
+
+        Args:
+            token: The token to revoke (access_token or refresh_token)
+            token_type_hint: Hint about token type ("access_token" or "refresh_token")
+
+        Returns:
+            True if revocation succeeded or if server doesn't support revocation
+
+        Note:
+            If the server doesn't have a revocation endpoint, this returns True
+            (the token will expire naturally on the server).
+        """
+        if not self._auth_metadata:
+            raise ValueError("Must discover authorization server before revocation")
+
+        # Check if server supports token revocation
+        # RFC 8414 specifies this as "revocation_endpoint"
+        revocation_endpoint = getattr(self._auth_metadata, "revocation_endpoint", None)
+        if not revocation_endpoint:
+            # Server doesn't support revocation, tokens will expire naturally
+            return True
+
+        # Prepare revocation request
+        data = {"token": token}
+        if token_type_hint:
+            data["token_type_hint"] = token_type_hint
+
+        # Include client credentials if available
+        if self._client_registration:
+            data["client_id"] = self._client_registration.client_id
+            if self._client_registration.client_secret:
+                data["client_secret"] = self._client_registration.client_secret
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    revocation_endpoint,
+                    data=data,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                # RFC 7009: Server responds with HTTP 200 for successful revocation
+                # Token might already be invalid, but that's still considered success
+                return response.status_code == 200
+        except Exception:
+            # If revocation fails, log but don't raise - tokens will expire naturally
+            return False
 
     async def authorize(self, scopes: Optional[list[str]] = None) -> OAuthTokens:
         """

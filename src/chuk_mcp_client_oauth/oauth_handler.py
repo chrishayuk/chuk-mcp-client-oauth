@@ -207,6 +207,78 @@ class OAuthHandler:
             del self._active_tokens[server_name]
         self.token_manager.delete_tokens(server_name)
 
+    async def logout(self, server_name: str, server_url: Optional[str] = None) -> None:
+        """
+        Logout from a server by revoking tokens and clearing them.
+
+        This method:
+        1. Attempts to revoke the access/refresh tokens with the server (if revocation endpoint available)
+        2. Clears tokens from memory cache
+        3. Deletes tokens from secure storage
+        4. Removes client registration
+
+        Args:
+            server_name: Name of the MCP server
+            server_url: Base URL of the MCP server (required for token revocation)
+
+        Note:
+            If server_url is not provided or revocation fails, tokens are still cleared locally.
+            The server may continue to accept the tokens until they expire naturally.
+        """
+        tokens = None
+
+        # Get tokens from memory or storage
+        if server_name in self._active_tokens:
+            tokens = self._active_tokens[server_name]
+        else:
+            tokens = self.token_manager.load_tokens(server_name)
+
+        # Try to revoke with server if we have a URL and tokens
+        if server_url and tokens:
+            try:
+                # Create MCP OAuth client for revocation
+                mcp_client = MCPOAuthClient(server_url)
+
+                # Discover OAuth metadata to find revocation endpoint
+                await mcp_client.discover_authorization_server()
+
+                # Load stored client registration
+                stored_registration = self.token_manager.load_client_registration(
+                    server_name
+                )
+                if stored_registration:
+                    mcp_client._client_registration = stored_registration
+
+                # Revoke refresh token first (more powerful)
+                if tokens.refresh_token:
+                    await mcp_client.revoke_token(
+                        tokens.refresh_token, token_type_hint="refresh_token"
+                    )
+                    logger.info(f"Revoked refresh token for {server_name}")
+
+                # Then revoke access token
+                if tokens.access_token:
+                    await mcp_client.revoke_token(
+                        tokens.access_token, token_type_hint="access_token"
+                    )
+                    logger.info(f"Revoked access token for {server_name}")
+
+            except Exception as e:
+                logger.warning(
+                    f"Token revocation failed for {server_name}: {e}. "
+                    "Tokens will be cleared locally but may remain valid on server."
+                )
+
+        # Clear tokens locally (always do this, even if revocation fails)
+        if server_name in self._active_tokens:
+            del self._active_tokens[server_name]
+
+        # Delete from storage
+        self.token_manager.delete_tokens(server_name)
+        self.token_manager.delete_client_registration(server_name)
+
+        logger.info(f"Logged out from {server_name}")
+
     async def prepare_headers_for_mcp_server(
         self,
         server_name: str,
