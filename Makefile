@@ -1,4 +1,4 @@
-.PHONY: clean clean-pyc clean-build clean-test clean-all test run build publish help install dev-install
+.PHONY: clean clean-pyc clean-build clean-test clean-all test run build publish help install dev-install version bump-patch bump-minor bump-major
 
 # Default target
 help:
@@ -21,6 +21,10 @@ help:
 	@echo "  build          - Build the project"
 	@echo "  publish        - Build and publish to PyPI"
 	@echo "  publish-test   - Build and publish to Test PyPI"
+	@echo "  version        - Show current version"
+	@echo "  bump-patch     - Bump patch version (0.0.X)"
+	@echo "  bump-minor     - Bump minor version (0.X.0)"
+	@echo "  bump-major     - Bump major version (X.0.0)"
 
 # Basic clean - Python bytecode and common artifacts
 clean: clean-pyc clean-build
@@ -238,3 +242,44 @@ info:
 	@echo "Current directory: $$(pwd)"
 	@echo "Git status:"
 	@git status --porcelain 2>/dev/null || echo "Not a git repository"
+
+# Version management
+version:
+	@echo "Current version:"
+	@grep '^version = ' pyproject.toml | cut -d'"' -f2
+
+bump-patch:
+	@echo "Bumping patch version..."
+	@CURRENT=$$(grep '^version = ' pyproject.toml | cut -d'"' -f2); \
+	MAJOR=$$(echo $$CURRENT | cut -d'.' -f1); \
+	MINOR=$$(echo $$CURRENT | cut -d'.' -f2); \
+	PATCH=$$(echo $$CURRENT | cut -d'.' -f3); \
+	NEW_PATCH=$$((PATCH + 1)); \
+	NEW_VERSION="$$MAJOR.$$MINOR.$$NEW_PATCH"; \
+	echo "$$CURRENT -> $$NEW_VERSION"; \
+	sed -i.bak "s/^version = \"$$CURRENT\"/version = \"$$NEW_VERSION\"/" pyproject.toml && rm pyproject.toml.bak; \
+	echo "Version bumped to $$NEW_VERSION"; \
+	echo "Don't forget to commit and tag: git tag v$$NEW_VERSION"
+
+bump-minor:
+	@echo "Bumping minor version..."
+	@CURRENT=$$(grep '^version = ' pyproject.toml | cut -d'"' -f2); \
+	MAJOR=$$(echo $$CURRENT | cut -d'.' -f1); \
+	MINOR=$$(echo $$CURRENT | cut -d'.' -f2); \
+	NEW_MINOR=$$((MINOR + 1)); \
+	NEW_VERSION="$$MAJOR.$$NEW_MINOR.0"; \
+	echo "$$CURRENT -> $$NEW_VERSION"; \
+	sed -i.bak "s/^version = \"$$CURRENT\"/version = \"$$NEW_VERSION\"/" pyproject.toml && rm pyproject.toml.bak; \
+	echo "Version bumped to $$NEW_VERSION"; \
+	echo "Don't forget to commit and tag: git tag v$$NEW_VERSION"
+
+bump-major:
+	@echo "Bumping major version..."
+	@CURRENT=$$(grep '^version = ' pyproject.toml | cut -d'"' -f2); \
+	MAJOR=$$(echo $$CURRENT | cut -d'.' -f1); \
+	NEW_MAJOR=$$((MAJOR + 1)); \
+	NEW_VERSION="$$NEW_MAJOR.0.0"; \
+	echo "$$CURRENT -> $$NEW_VERSION"; \
+	sed -i.bak "s/^version = \"$$CURRENT\"/version = \"$$NEW_VERSION\"/" pyproject.toml && rm pyproject.toml.bak; \
+	echo "Version bumped to $$NEW_VERSION"; \
+	echo "Don't forget to commit and tag: git tag v$$NEW_VERSION"

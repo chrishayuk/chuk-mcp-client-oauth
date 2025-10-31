@@ -1,55 +1,63 @@
-name: Manual Publish
+name: Publish to PyPI
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
-      environment:
-        description: 'PyPI environment to publish to'
-        required: true
-        type: choice
-        options:
-          - testpypi
-          - pypi
-        default: testpypi
-
-permissions:
-  contents: read
-  id-token: write
+      skip_tests:
+        description: 'Skip test job (use with caution)'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
-  publish:
+  test:
+    if: ${{ !inputs.skip_tests }}
+    uses: ./.github/workflows/test.yml
+
+  build:
+    needs: test
+    if: ${{ always() && (needs.test.result == 'success' || needs.test.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
+    - name: Set up Python
+      run: uv python install 3.12
 
-      - name: Install dependencies
-        run: uv sync --all-extras
+    - name: Build package
+      run: |
+        uv build
 
-      - name: Run tests
-        run: uv run pytest
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: dist
+        path: dist/
 
-      - name: Build package
-        run: uv build
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/chuk-mcp-client-oauth
+    permissions:
+      id-token: write
 
-      - name: Publish to TestPyPI
-        if: ${{ github.event.inputs.environment == 'testpypi' }}
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
+    steps:
+    - name: Download artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: dist
+        path: dist/
 
-      - name: Publish to PyPI
-        if: ${{ github.event.inputs.environment == 'pypi' }}
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        verbose: true
