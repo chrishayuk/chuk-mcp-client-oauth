@@ -11,6 +11,7 @@ This implements:
 import asyncio
 import base64
 import hashlib
+import logging
 import secrets
 import urllib.parse
 import webbrowser
@@ -23,6 +24,8 @@ import httpx
 from pydantic import BaseModel, Field
 
 from .oauth_config import OAuthTokens
+
+logger = logging.getLogger(__name__)
 
 
 class MCPAuthorizationMetadata(BaseModel):
@@ -191,10 +194,10 @@ class MCPOAuthClient:
         class CallbackHandler(BaseHTTPRequestHandler):
             def log_message(self, format, *args):
                 # Log to stdout for debugging
-                print(f"[Callback Server] {format % args}")
+                logger.debug(f"Callback Server: {format % args}")
 
             def do_GET(self):
-                print(f"[Callback Server] Received request: {self.path}")
+                logger.debug(f"Callback Server: Received request: {self.path}")
                 parsed = urllib.parse.urlparse(self.path)
 
                 # Ignore non-callback requests (favicon, etc.)
@@ -206,7 +209,7 @@ class MCPOAuthClient:
                     return
 
                 params = dict(urllib.parse.parse_qsl(parsed.query))
-                print(f"[Callback Server] Query params: {params}")
+                logger.debug(f"Callback Server: Query params: {params}")
 
                 # Only set _auth_result if we haven't already got a successful result
                 if oauth_client._auth_result is None:
@@ -244,30 +247,32 @@ class MCPOAuthClient:
         handler_class = self._create_callback_handler()
         server = HTTPServer(("localhost", port), handler_class)
 
-        print(f"[Callback Server] Starting server on localhost:{port}")
+        logger.debug(f"Callback Server: Starting server on localhost:{port}")
         server_thread = Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
-        print("[Callback Server] Server started, waiting for callback...")
+        logger.debug("Callback Server: Server started, waiting for callback...")
 
         # Wait for callback or timeout (5 minutes)
         timeout_seconds = 300
         for i in range(timeout_seconds):
             if self._auth_result is not None:
-                print(f"[Callback Server] Callback received after {i} seconds")
+                logger.debug(f"Callback Server: Callback received after {i} seconds")
                 break
             await asyncio.sleep(1)
 
             # Print progress every 30 seconds
             if i > 0 and i % 30 == 0:
                 remaining = timeout_seconds - i
-                print(f"[Callback Server] Still waiting... ({remaining}s remaining)")
+                logger.debug(
+                    f"Callback Server: Still waiting... ({remaining}s remaining)"
+                )
 
         if self._auth_result is None:
-            print(f"[Callback Server] Timeout after {timeout_seconds} seconds")
+            logger.debug(f"Callback Server: Timeout after {timeout_seconds} seconds")
 
-        print("[Callback Server] Shutting down server...")
+        logger.debug("Callback Server: Shutting down server...")
         server.shutdown()
-        print("[Callback Server] Server stopped")
+        logger.debug("Callback Server: Server stopped")
 
     async def exchange_code_for_token(self, code: str) -> OAuthTokens:
         """
@@ -402,17 +407,17 @@ class MCPOAuthClient:
             OAuth tokens
         """
         # Step 1: Discover authorization server
-        print("\n🔍 Discovering authorization server...")
+        logger.info("🔍 Discovering authorization server...")
         await self.discover_authorization_server()
 
         # Step 2: Register as OAuth client
-        print("📝 Registering OAuth client...")
+        logger.info("📝 Registering OAuth client...")
         await self.register_client()
 
         # Step 3: Get authorization from user
-        print("🔐 Opening browser for authorization...")
+        logger.info("🔐 Opening browser for authorization...")
         auth_url = self.get_authorization_url(scopes)
-        print(f"If browser doesn't open, visit: {auth_url}\n")
+        logger.info(f"If browser doesn't open, visit: {auth_url}\n")
         webbrowser.open(auth_url)
 
         # Step 4: Wait for callback
@@ -428,9 +433,9 @@ class MCPOAuthClient:
             raise Exception(f"Authorization failed: {self._auth_result['error']}")
 
         # Step 5: Exchange code for token
-        print("🔄 Exchanging code for token...")
+        logger.info("🔄 Exchanging code for token...")
         code = self._auth_result["code"]
         tokens = await self.exchange_code_for_token(code)
 
-        print("✅ Authorization complete!\n")
+        logger.info("✅ Authorization complete!\n")
         return tokens

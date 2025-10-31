@@ -19,7 +19,8 @@ from .oauth_handler import OAuthHandler
 from .token_manager import TokenManager
 from .token_store_factory import TokenStoreBackend, TokenStoreFactory
 from .secure_token_store import SecureTokenStore
-from .token_types import TokenType, StoredToken
+from .token_types import TokenType, StoredToken, APIKeyToken, BearerToken
+from .token_registry import TokenRegistry
 
 __version__ = "0.1.0"
 
@@ -37,4 +38,7 @@ __all__ = [
     "SecureTokenStore",
     "TokenType",
     "StoredToken",
+    "APIKeyToken",
+    "BearerToken",
+    "TokenRegistry",
 ]

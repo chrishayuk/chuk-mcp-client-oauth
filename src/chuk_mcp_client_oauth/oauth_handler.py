@@ -83,8 +83,8 @@ class OAuthHandler:
                 # Fall through to full auth flow
 
         # Perform full MCP OAuth flow
-        print(f"\n🔐 Authentication required for {server_name}")
-        print("=" * 60)
+        logger.info(f"🔐 Authentication required for {server_name}")
+        # Removed decoration
         tokens = await mcp_client.authorize(scopes)
 
         # Save both tokens and client registration
@@ -168,8 +168,8 @@ class OAuthHandler:
         """Perform full OAuth authorization flow."""
         flow = OAuthFlow(oauth_config)
 
-        print(f"\n🔐 Authentication required for {server_name}")
-        print("=" * 60)
+        logger.info(f"🔐 Authentication required for {server_name}")
+        # Removed decoration
 
         tokens = await flow.authorize()
 
@@ -177,7 +177,7 @@ class OAuthHandler:
         self.token_manager.save_tokens(server_name, tokens)
         self._active_tokens[server_name] = tokens
 
-        print(f"✅ Successfully authenticated {server_name}\n")
+        logger.info(f"✅ Successfully authenticated {server_name}")
         logger.info(f"Completed OAuth flow for {server_name}")
 
         return tokens
@@ -346,3 +346,50 @@ class OAuthHandler:
             raise
 
         return headers
+
+    async def prepare_server_headers(
+        self,
+        server_config,
+        extra_headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, str]:
+        """
+        Prepare HTTP headers for a server (compatibility method for mcp-cli).
+
+        This method handles both MCP OAuth and explicit OAuth configs.
+
+        Args:
+            server_config: Server configuration object with name, url, and optional oauth
+            extra_headers: Optional additional headers to include
+
+        Returns:
+            Dictionary of HTTP headers including Authorization header
+
+        Raises:
+            Exception: If authentication fails
+        """
+        server_name = server_config.name
+
+        # Check if this is a remote MCP server (has URL, no command)
+        is_remote_mcp = server_config.url and not server_config.command
+
+        # Check if explicit OAuth config is provided
+        has_explicit_oauth = server_config.oauth is not None
+
+        if is_remote_mcp:
+            # Use MCP OAuth (auto-discovery)
+            return await self.prepare_headers_for_mcp_server(
+                server_name=server_name,
+                server_url=server_config.url,
+                scopes=None,
+                extra_headers=extra_headers,
+            )
+        elif has_explicit_oauth:
+            # Use explicit OAuth config
+            return await self.prepare_headers_with_oauth_config(
+                server_name=server_name,
+                oauth_config=server_config.oauth,
+                extra_headers=extra_headers,
+            )
+        else:
+            # No OAuth needed
+            return extra_headers.copy() if extra_headers else {}
