@@ -1,4 +1,4 @@
-.PHONY: clean clean-pyc clean-build clean-test clean-all test run build publish help install dev-install version bump-patch bump-minor bump-major
+.PHONY: clean clean-pyc clean-build clean-test clean-all test run build publish help install dev-install version bump-patch bump-minor bump-major release release-patch release-minor release-major
 
 # Default target
 help:
@@ -25,6 +25,9 @@ help:
 	@echo "  bump-patch     - Bump patch version (0.0.X)"
 	@echo "  bump-minor     - Bump minor version (0.X.0)"
 	@echo "  bump-major     - Bump major version (X.0.0)"
+	@echo "  release-patch  - Bump patch, commit, tag, and push (triggers release)"
+	@echo "  release-minor  - Bump minor, commit, tag, and push (triggers release)"
+	@echo "  release-major  - Bump major, commit, tag, and push (triggers release)"
 
 # Basic clean - Python bytecode and common artifacts
 clean: clean-pyc clean-build
@@ -283,3 +286,121 @@ bump-major:
 	sed -i.bak "s/^version = \"$$CURRENT\"/version = \"$$NEW_VERSION\"/" pyproject.toml && rm pyproject.toml.bak; \
 	echo "Version bumped to $$NEW_VERSION"; \
 	echo "Don't forget to commit and tag: git tag v$$NEW_VERSION"
+
+# Release targets (bump, commit, tag, push)
+release-patch: check
+	@echo "Creating patch release..."
+	@CURRENT=$$(grep '^version = ' pyproject.toml | cut -d'"' -f2); \
+	MAJOR=$$(echo $$CURRENT | cut -d'.' -f1); \
+	MINOR=$$(echo $$CURRENT | cut -d'.' -f2); \
+	PATCH=$$(echo $$CURRENT | cut -d'.' -f3); \
+	NEW_PATCH=$$((PATCH + 1)); \
+	NEW_VERSION="$$MAJOR.$$MINOR.$$NEW_PATCH"; \
+	echo ""; \
+	echo "Release: $$CURRENT -> $$NEW_VERSION"; \
+	echo ""; \
+	read -p "Continue with release v$$NEW_VERSION? [y/N] " -n 1 -r; \
+	echo ""; \
+	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
+		sed -i.bak "s/^version = \"$$CURRENT\"/version = \"$$NEW_VERSION\"/" pyproject.toml && rm pyproject.toml.bak; \
+		git add pyproject.toml; \
+		git commit -m "Bump version to $$NEW_VERSION"; \
+		git tag -a "v$$NEW_VERSION" -m "Release v$$NEW_VERSION"; \
+		echo ""; \
+		echo "✅ Version bumped to $$NEW_VERSION"; \
+		echo "✅ Changes committed"; \
+		echo "✅ Tag v$$NEW_VERSION created"; \
+		echo ""; \
+		echo "Push to trigger release:"; \
+		echo "  git push origin main --tags"; \
+		echo ""; \
+		read -p "Push now? [y/N] " -n 1 -r; \
+		echo ""; \
+		if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
+			git push origin main --tags; \
+			echo ""; \
+			echo "🚀 Release triggered! Check GitHub Actions:"; \
+			echo "   https://github.com/chrishayuk/chuk-mcp-client-oauth/actions"; \
+		else \
+			echo "Skipped push. Run manually: git push origin main --tags"; \
+		fi; \
+	else \
+		echo "Release cancelled."; \
+	fi
+
+release-minor: check
+	@echo "Creating minor release..."
+	@CURRENT=$$(grep '^version = ' pyproject.toml | cut -d'"' -f2); \
+	MAJOR=$$(echo $$CURRENT | cut -d'.' -f1); \
+	MINOR=$$(echo $$CURRENT | cut -d'.' -f2); \
+	NEW_MINOR=$$((MINOR + 1)); \
+	NEW_VERSION="$$MAJOR.$$NEW_MINOR.0"; \
+	echo ""; \
+	echo "Release: $$CURRENT -> $$NEW_VERSION"; \
+	echo ""; \
+	read -p "Continue with release v$$NEW_VERSION? [y/N] " -n 1 -r; \
+	echo ""; \
+	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
+		sed -i.bak "s/^version = \"$$CURRENT\"/version = \"$$NEW_VERSION\"/" pyproject.toml && rm pyproject.toml.bak; \
+		git add pyproject.toml; \
+		git commit -m "Bump version to $$NEW_VERSION"; \
+		git tag -a "v$$NEW_VERSION" -m "Release v$$NEW_VERSION"; \
+		echo ""; \
+		echo "✅ Version bumped to $$NEW_VERSION"; \
+		echo "✅ Changes committed"; \
+		echo "✅ Tag v$$NEW_VERSION created"; \
+		echo ""; \
+		echo "Push to trigger release:"; \
+		echo "  git push origin main --tags"; \
+		echo ""; \
+		read -p "Push now? [y/N] " -n 1 -r; \
+		echo ""; \
+		if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
+			git push origin main --tags; \
+			echo ""; \
+			echo "🚀 Release triggered! Check GitHub Actions:"; \
+			echo "   https://github.com/chrishayuk/chuk-mcp-client-oauth/actions"; \
+		else \
+			echo "Skipped push. Run manually: git push origin main --tags"; \
+		fi; \
+	else \
+		echo "Release cancelled."; \
+	fi
+
+release-major: check
+	@echo "Creating major release..."
+	@CURRENT=$$(grep '^version = ' pyproject.toml | cut -d'"' -f2); \
+	MAJOR=$$(echo $$CURRENT | cut -d'.' -f1); \
+	NEW_MAJOR=$$((MAJOR + 1)); \
+	NEW_VERSION="$$NEW_MAJOR.0.0"; \
+	echo ""; \
+	echo "⚠️  MAJOR RELEASE: $$CURRENT -> $$NEW_VERSION"; \
+	echo ""; \
+	read -p "Continue with MAJOR release v$$NEW_VERSION? [y/N] " -n 1 -r; \
+	echo ""; \
+	if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
+		sed -i.bak "s/^version = \"$$CURRENT\"/version = \"$$NEW_VERSION\"/" pyproject.toml && rm pyproject.toml.bak; \
+		git add pyproject.toml; \
+		git commit -m "Bump version to $$NEW_VERSION"; \
+		git tag -a "v$$NEW_VERSION" -m "Release v$$NEW_VERSION"; \
+		echo ""; \
+		echo "✅ Version bumped to $$NEW_VERSION"; \
+		echo "✅ Changes committed"; \
+		echo "✅ Tag v$$NEW_VERSION created"; \
+		echo ""; \
+		echo "Push to trigger release:"; \
+		echo "  git push origin main --tags"; \
+		echo ""; \
+		read -p "Push now? [y/N] " -n 1 -r; \
+		echo ""; \
+		if [[ $$REPLY =~ ^[Yy]$$ ]]; then \
+			git push origin main --tags; \
+			echo ""; \
+			echo "🚀 Release triggered! Check GitHub Actions:"; \
+			echo "   https://github.com/chrishayuk/chuk-mcp-client-oauth/actions"; \
+		else \
+			echo "Skipped push. Run manually: git push origin main --tags"; \
+		fi; \
+	else \
+		echo "Release cancelled."; \
+	fi
