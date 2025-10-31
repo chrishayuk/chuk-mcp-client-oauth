@@ -142,4 +142,4 @@ dmypy.json
 tokens/
 
 # UV
-uv.lock
+# uv.lock - committed to repo for reproducible builds
