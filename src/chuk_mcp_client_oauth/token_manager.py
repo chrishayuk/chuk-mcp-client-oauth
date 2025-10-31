@@ -4,7 +4,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 
 from .oauth_config import OAuthTokens
 from .secure_token_store import SecureTokenStore
@@ -23,11 +23,8 @@ class TokenManager:
         token_dir: Optional[Path] = None,
         backend: TokenStoreBackend = TokenStoreBackend.AUTO,
         password: Optional[str] = None,
-        vault_url: Optional[str] = None,
-        vault_token: Optional[str] = None,
-        vault_mount_point: str = "secret",
-        vault_path_prefix: str = "mcp-cli/oauth",
-        vault_namespace: Optional[str] = None,
+        namespace: str = "oauth",
+        backend_config: Optional[dict] = None,
     ):
         """
         Initialize token manager with secure storage backend.
@@ -36,28 +33,42 @@ class TokenManager:
             token_dir: Directory for file-based storage (default: ~/.chuk_oauth/tokens)
             backend: Storage backend to use (default: AUTO for auto-detection)
             password: Password for encrypted file storage
-            vault_url: HashiCorp Vault URL
-            vault_token: HashiCorp Vault token
-            vault_mount_point: Vault KV mount point
-            vault_path_prefix: Vault path prefix for tokens
-            vault_namespace: Vault namespace (Enterprise)
+            namespace: Namespace for token registry (default: "oauth")
+            backend_config: Backend-specific configuration dict (e.g., Vault settings)
+                           Example for Vault:
+                           {
+                               "vault_url": "https://vault.example.com",
+                               "vault_token": "token",
+                               "vault_mount_point": "secret",
+                               "vault_namespace": "enterprise-ns"
+                           }
         """
         if token_dir is None:
             token_dir = Path.home() / ".chuk_oauth" / "tokens"
 
         self.token_dir = token_dir
+        self.namespace = namespace
+
+        # Build backend configuration
+        store_kwargs: dict[str, Any] = {
+            "backend": backend,
+            "token_dir": token_dir,
+            "password": password,
+        }
+
+        # Add backend-specific config
+        if backend_config:
+            store_kwargs.update(backend_config)
+
+        # Set default vault_path_prefix derived from namespace if using Vault
+        if (
+            backend == TokenStoreBackend.VAULT
+            and "vault_path_prefix" not in store_kwargs
+        ):
+            store_kwargs["vault_path_prefix"] = f"{namespace}/oauth"
 
         # Create secure token store
-        self.token_store: SecureTokenStore = TokenStoreFactory.create(
-            backend=backend,
-            token_dir=token_dir,
-            password=password,
-            vault_url=vault_url,
-            vault_token=vault_token,
-            vault_mount_point=vault_mount_point,
-            vault_path_prefix=vault_path_prefix,
-            vault_namespace=vault_namespace,
-        )
+        self.token_store: SecureTokenStore = TokenStoreFactory.create(**store_kwargs)  # type: ignore[arg-type]
 
         # Create token registry for tracking
         self.registry = TokenRegistry()
@@ -102,7 +113,9 @@ class TokenManager:
             else:
                 metadata["expires_at"] = time.time() + tokens.expires_in
 
-        self.registry.register(server_name, TokenType.OAUTH, "oauth", metadata=metadata)
+        self.registry.register(
+            server_name, TokenType.OAUTH, self.namespace, metadata=metadata
+        )
 
     def load_tokens(self, server_name: str) -> Optional[OAuthTokens]:
         """
