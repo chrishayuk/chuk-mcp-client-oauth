@@ -12,12 +12,19 @@ from chuk_mcp_client_oauth.secure_token_store import SecureTokenStore, TokenStor
 class KeychainTokenStore(SecureTokenStore):
     """Token storage using macOS Keychain."""
 
-    SERVICE_NAME = "mcp-cli-oauth"
+    DEFAULT_SERVICE_NAME = "chuk-oauth"
 
-    def __init__(self):
-        """Initialize Keychain token store."""
+    def __init__(self, service_name: Optional[str] = None):
+        """
+        Initialize Keychain token store.
+
+        Args:
+            service_name: Custom service name for keychain entries (default: "chuk-oauth")
+        """
         if platform.system() != "Darwin":
             raise TokenStorageError("Keychain storage is only available on macOS")
+
+        self.service_name = service_name or self.DEFAULT_SERVICE_NAME
 
         try:
             import keyring
@@ -43,7 +50,7 @@ class KeychainTokenStore(SecureTokenStore):
             token_json = json.dumps(tokens.model_dump())
 
             # Store in Keychain
-            self.keyring.set_password(self.SERVICE_NAME, safe_name, token_json)
+            self.keyring.set_password(self.service_name, safe_name, token_json)
         except Exception as e:
             raise TokenStorageError(f"Failed to store token in Keychain: {e}")
 
@@ -53,7 +60,7 @@ class KeychainTokenStore(SecureTokenStore):
             safe_name = self._sanitize_name(server_name)
 
             # Retrieve from Keychain
-            token_json = self.keyring.get_password(self.SERVICE_NAME, safe_name)
+            token_json = self.keyring.get_password(self.service_name, safe_name)
 
             if token_json is None:
                 return None
@@ -72,11 +79,11 @@ class KeychainTokenStore(SecureTokenStore):
             safe_name = self._sanitize_name(server_name)
 
             # Check if token exists
-            if self.keyring.get_password(self.SERVICE_NAME, safe_name) is None:
+            if self.keyring.get_password(self.service_name, safe_name) is None:
                 return False
 
             # Delete from Keychain
-            self.keyring.delete_password(self.SERVICE_NAME, safe_name)
+            self.keyring.delete_password(self.service_name, safe_name)
             return True
         except Exception as e:
             raise TokenStorageError(f"Failed to delete token from Keychain: {e}")
@@ -85,7 +92,7 @@ class KeychainTokenStore(SecureTokenStore):
         """Check if tokens exist in macOS Keychain."""
         try:
             safe_name = self._sanitize_name(server_name)
-            return self.keyring.get_password(self.SERVICE_NAME, safe_name) is not None
+            return self.keyring.get_password(self.service_name, safe_name) is not None
         except Exception:
             return False
 
@@ -95,7 +102,7 @@ class KeychainTokenStore(SecureTokenStore):
         """Store raw string value in Keychain."""
         try:
             safe_key = self._sanitize_name(key)
-            self.keyring.set_password(self.SERVICE_NAME, safe_key, value)
+            self.keyring.set_password(self.service_name, safe_key, value)
         except Exception as e:
             raise TokenStorageError(f"Failed to store value in Keychain: {e}")
 
@@ -103,7 +110,7 @@ class KeychainTokenStore(SecureTokenStore):
         """Retrieve raw string value from Keychain."""
         try:
             safe_key = self._sanitize_name(key)
-            result = self.keyring.get_password(self.SERVICE_NAME, safe_key)
+            result = self.keyring.get_password(self.service_name, safe_key)
             return str(result) if result is not None else None
         except Exception as e:
             raise TokenStorageError(f"Failed to retrieve value from Keychain: {e}")
@@ -112,9 +119,9 @@ class KeychainTokenStore(SecureTokenStore):
         """Delete raw value from Keychain."""
         try:
             safe_key = self._sanitize_name(key)
-            if self.keyring.get_password(self.SERVICE_NAME, safe_key) is None:
+            if self.keyring.get_password(self.service_name, safe_key) is None:
                 return False
-            self.keyring.delete_password(self.SERVICE_NAME, safe_key)
+            self.keyring.delete_password(self.service_name, safe_key)
             return True
         except Exception as e:
             raise TokenStorageError(f"Failed to delete value from Keychain: {e}")

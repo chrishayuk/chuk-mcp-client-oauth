@@ -12,14 +12,21 @@ from chuk_mcp_client_oauth.secure_token_store import SecureTokenStore, TokenStor
 class CredentialManagerTokenStore(SecureTokenStore):
     """Token storage using Windows Credential Manager."""
 
-    SERVICE_NAME = "mcp-cli-oauth"
+    DEFAULT_SERVICE_NAME = "chuk-oauth"
 
-    def __init__(self):
-        """Initialize Windows Credential Manager token store."""
+    def __init__(self, service_name: Optional[str] = None):
+        """
+        Initialize Windows Credential Manager token store.
+
+        Args:
+            service_name: Custom service name for credential entries (default: "chuk-oauth")
+        """
         if platform.system() != "Windows":
             raise TokenStorageError(
                 "Windows Credential Manager is only available on Windows"
             )
+
+        self.service_name = service_name or self.DEFAULT_SERVICE_NAME
 
         try:
             import keyring
@@ -45,7 +52,7 @@ class CredentialManagerTokenStore(SecureTokenStore):
             token_json = json.dumps(tokens.model_dump())
 
             # Store in Credential Manager
-            self.keyring.set_password(self.SERVICE_NAME, safe_name, token_json)
+            self.keyring.set_password(self.service_name, safe_name, token_json)
         except Exception as e:
             raise TokenStorageError(f"Failed to store token in Credential Manager: {e}")
 
@@ -55,7 +62,7 @@ class CredentialManagerTokenStore(SecureTokenStore):
             safe_name = self._sanitize_name(server_name)
 
             # Retrieve from Credential Manager
-            token_json = self.keyring.get_password(self.SERVICE_NAME, safe_name)
+            token_json = self.keyring.get_password(self.service_name, safe_name)
 
             if token_json is None:
                 return None
@@ -76,11 +83,11 @@ class CredentialManagerTokenStore(SecureTokenStore):
             safe_name = self._sanitize_name(server_name)
 
             # Check if token exists
-            if self.keyring.get_password(self.SERVICE_NAME, safe_name) is None:
+            if self.keyring.get_password(self.service_name, safe_name) is None:
                 return False
 
             # Delete from Credential Manager
-            self.keyring.delete_password(self.SERVICE_NAME, safe_name)
+            self.keyring.delete_password(self.service_name, safe_name)
             return True
         except Exception as e:
             raise TokenStorageError(
@@ -91,7 +98,7 @@ class CredentialManagerTokenStore(SecureTokenStore):
         """Check if tokens exist in Windows Credential Manager."""
         try:
             safe_name = self._sanitize_name(server_name)
-            return self.keyring.get_password(self.SERVICE_NAME, safe_name) is not None
+            return self.keyring.get_password(self.service_name, safe_name) is not None
         except Exception:
             return False
 
@@ -101,7 +108,7 @@ class CredentialManagerTokenStore(SecureTokenStore):
         """Store raw string value in Credential Manager."""
         try:
             safe_key = self._sanitize_name(key)
-            self.keyring.set_password(self.SERVICE_NAME, safe_key, value)
+            self.keyring.set_password(self.service_name, safe_key, value)
         except Exception as e:
             raise TokenStorageError(f"Failed to store value in Credential Manager: {e}")
 
@@ -109,7 +116,7 @@ class CredentialManagerTokenStore(SecureTokenStore):
         """Retrieve raw string value from Credential Manager."""
         try:
             safe_key = self._sanitize_name(key)
-            result = self.keyring.get_password(self.SERVICE_NAME, safe_key)
+            result = self.keyring.get_password(self.service_name, safe_key)
             return str(result) if result is not None else None
         except Exception as e:
             raise TokenStorageError(
@@ -120,9 +127,9 @@ class CredentialManagerTokenStore(SecureTokenStore):
         """Delete raw value from Credential Manager."""
         try:
             safe_key = self._sanitize_name(key)
-            if self.keyring.get_password(self.SERVICE_NAME, safe_key) is None:
+            if self.keyring.get_password(self.service_name, safe_key) is None:
                 return False
-            self.keyring.delete_password(self.SERVICE_NAME, safe_key)
+            self.keyring.delete_password(self.service_name, safe_key)
             return True
         except Exception as e:
             raise TokenStorageError(

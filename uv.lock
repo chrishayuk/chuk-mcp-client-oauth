@@ -1,6 +1,11 @@
 version = 1
 revision = 3
 requires-python = ">=3.10"
+resolution-markers = [
+    "sys_platform == 'darwin'",
+    "sys_platform == 'win32'",
+    "sys_platform != 'darwin' and sys_platform != 'win32'",
+]
 
 [[package]]
 name = "annotated-types"
@@ -99,7 +104,7 @@ name = "build"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "os_name == 'nt'" },
+    { name = "colorama", marker = "os_name == 'nt' and sys_platform != 'darwin'" },
     { name = "importlib-metadata", marker = "python_full_version < '3.10.2'" },
     { name = "packaging" },
     { name = "pyproject-hooks" },
@@ -292,17 +297,19 @@ wheels = [
 
 [[package]]
 name = "chuk-mcp-client-oauth"
-version = "0.1.6"
+version = "0.1.7"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "httpx" },
+    { name = "keyring", marker = "sys_platform == 'darwin' or sys_platform == 'win32'" },
     { name = "pydantic" },
 ]
 
 [package.optional-dependencies]
 all = [
     { name = "hvac" },
+    { name = "keyring" },
     { name = "secretstorage" },
 ]
 dev = [
@@ -319,6 +326,7 @@ dev = [
     { name = "twine" },
 ]
 linux = [
+    { name = "keyring" },
     { name = "secretstorage" },
 ]
 vault = [
@@ -334,7 +342,11 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.24.0" },
     { name = "hvac", marker = "extra == 'all'", specifier = ">=1.0.0" },
     { name = "hvac", marker = "extra == 'vault'", specifier = ">=1.0.0" },
+    { name = "keyring", marker = "sys_platform == 'darwin'", specifier = ">=24.0.0" },
+    { name = "keyring", marker = "sys_platform == 'win32'", specifier = ">=24.0.0" },
+    { name = "keyring", marker = "extra == 'all'", specifier = ">=24.0.0" },
     { name = "keyring", marker = "extra == 'dev'", specifier = ">=24.0.0" },
+    { name = "keyring", marker = "extra == 'linux'", specifier = ">=24.0.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
@@ -346,7 +358,7 @@ requires-dist = [
     { name = "secretstorage", marker = "extra == 'linux'", specifier = ">=3.3.0" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=4.0.0" },
 ]
-provides-extras = ["vault", "keychain", "linux", "windows", "all", "dev"]
+provides-extras = ["vault", "linux", "all", "dev"]
 
 [[package]]
 name = "click"

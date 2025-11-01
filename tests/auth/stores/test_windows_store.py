@@ -20,7 +20,7 @@ class TestCredentialManagerTokenStoreInit:
         with patch.dict("sys.modules", {"keyring": mock_keyring}):
             store = CredentialManagerTokenStore()
             assert store.keyring == mock_keyring
-            assert store.SERVICE_NAME == "mcp-cli-oauth"
+            assert store.service_name == "chuk-oauth"
 
     @patch("platform.system", return_value="Darwin")
     def test_init_on_non_windows_raises_error(self, mock_platform):
@@ -70,7 +70,7 @@ class TestCredentialManagerTokenStoreOperations:
         store.keyring.set_password.assert_called_once()
         service, username, password = store.keyring.set_password.call_args[0]
 
-        assert service == "mcp-cli-oauth"
+        assert service == "chuk-oauth"
         assert username == "test-server"
 
         token_data = json.loads(password)
@@ -179,7 +179,7 @@ class TestCredentialManagerTokenStoreOperations:
         store._store_raw("test-key", "test-value")
 
         store.keyring.set_password.assert_called_once_with(
-            "mcp-cli-oauth", "test-key", "test-value"
+            "chuk-oauth", "test-key", "test-value"
         )
 
     def test_store_raw_error_handling(self, store):

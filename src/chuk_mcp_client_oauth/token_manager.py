@@ -23,6 +23,7 @@ class TokenManager:
         token_dir: Optional[Path] = None,
         backend: TokenStoreBackend = TokenStoreBackend.AUTO,
         password: Optional[str] = None,
+        service_name: Optional[str] = None,
         namespace: str = "oauth",
         backend_config: Optional[dict] = None,
     ):
@@ -33,6 +34,8 @@ class TokenManager:
             token_dir: Directory for file-based storage (default: ~/.chuk_oauth/tokens)
             backend: Storage backend to use (default: AUTO for auto-detection)
             password: Password for encrypted file storage
+            service_name: Service name for keychain/credential storage (default: "chuk-oauth")
+                         Use this to customize the service name for your application
             namespace: Namespace for token registry (default: "oauth")
             backend_config: Backend-specific configuration dict (e.g., Vault settings)
                            Example for Vault:
@@ -54,6 +57,7 @@ class TokenManager:
             "backend": backend,
             "token_dir": token_dir,
             "password": password,
+            "service_name": service_name,
         }
 
         # Add backend-specific config

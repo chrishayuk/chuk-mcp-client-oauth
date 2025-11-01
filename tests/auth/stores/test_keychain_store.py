@@ -20,7 +20,7 @@ class TestKeychainTokenStoreInit:
         with patch.dict("sys.modules", {"keyring": mock_keyring}):
             store = KeychainTokenStore()
             assert store.keyring == mock_keyring
-            assert store.SERVICE_NAME == "mcp-cli-oauth"
+            assert store.service_name == "chuk-oauth"
 
     @patch("platform.system", return_value="Linux")
     def test_init_on_non_macos_raises_error(self, mock_platform):
@@ -78,7 +78,7 @@ class TestKeychainTokenStoreOperations:
         store.keyring.set_password.assert_called_once()
         service, username, password = store.keyring.set_password.call_args[0]
 
-        assert service == "mcp-cli-oauth"
+        assert service == "chuk-oauth"
         assert username == "test-server"
 
         # Verify the token was serialized
@@ -122,9 +122,7 @@ class TestKeychainTokenStoreOperations:
         assert retrieved.access_token == sample_tokens.access_token
         assert retrieved.refresh_token == sample_tokens.refresh_token
 
-        store.keyring.get_password.assert_called_once_with(
-            "mcp-cli-oauth", "test-server"
-        )
+        store.keyring.get_password.assert_called_once_with("chuk-oauth", "test-server")
 
     def test_retrieve_token_nonexistent(self, store):
         """Test retrieving nonexistent token."""
@@ -159,7 +157,7 @@ class TestKeychainTokenStoreOperations:
 
         assert result is True
         store.keyring.delete_password.assert_called_once_with(
-            "mcp-cli-oauth", "test-server"
+            "chuk-oauth", "test-server"
         )
 
     def test_delete_token_nonexistent(self, store):
@@ -223,7 +221,7 @@ class TestKeychainTokenStoreRawOperations:
         store._store_raw("test-key", "test-value")
 
         store.keyring.set_password.assert_called_once_with(
-            "mcp-cli-oauth", "test-key", "test-value"
+            "chuk-oauth", "test-key", "test-value"
         )
 
     def test_store_raw_error_handling(self, store):
@@ -242,7 +240,7 @@ class TestKeychainTokenStoreRawOperations:
         result = store._retrieve_raw("test-key")
 
         assert result == "test-value"
-        store.keyring.get_password.assert_called_once_with("mcp-cli-oauth", "test-key")
+        store.keyring.get_password.assert_called_once_with("chuk-oauth", "test-key")
 
     def test_retrieve_raw_error_handling(self, store):
         """Test error handling when retrieving raw value."""
@@ -260,9 +258,7 @@ class TestKeychainTokenStoreRawOperations:
         result = store._delete_raw("test-key")
 
         assert result is True
-        store.keyring.delete_password.assert_called_once_with(
-            "mcp-cli-oauth", "test-key"
-        )
+        store.keyring.delete_password.assert_called_once_with("chuk-oauth", "test-key")
 
     def test_delete_raw_nonexistent(self, store):
         """Test deleting nonexistent raw value."""

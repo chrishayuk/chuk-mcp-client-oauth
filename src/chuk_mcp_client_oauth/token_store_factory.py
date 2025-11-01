@@ -29,6 +29,7 @@ class TokenStoreFactory:
         backend: TokenStoreBackend = TokenStoreBackend.AUTO,
         token_dir: Optional[Path] = None,
         password: Optional[str] = None,
+        service_name: Optional[str] = None,
         vault_url: Optional[str] = None,
         vault_token: Optional[str] = None,
         vault_mount_point: str = "secret",
@@ -42,6 +43,7 @@ class TokenStoreFactory:
             backend: Backend to use (default: AUTO for auto-detection)
             token_dir: Directory for file-based storage
             password: Password for encrypted file storage
+            service_name: Service name for keychain/credential storage (default: "chuk-oauth")
             vault_url: HashiCorp Vault URL
             vault_token: HashiCorp Vault token
             vault_mount_point: Vault KV mount point
@@ -62,17 +64,17 @@ class TokenStoreFactory:
             if backend == TokenStoreBackend.KEYCHAIN:
                 from .stores.keychain_store import KeychainTokenStore
 
-                return KeychainTokenStore()
+                return KeychainTokenStore(service_name=service_name)
 
             elif backend == TokenStoreBackend.CREDENTIAL_MANAGER:
                 from .stores.windows_store import CredentialManagerTokenStore
 
-                return CredentialManagerTokenStore()
+                return CredentialManagerTokenStore(service_name=service_name)
 
             elif backend == TokenStoreBackend.SECRET_SERVICE:
                 from .stores.linux_store import SecretServiceTokenStore
 
-                return SecretServiceTokenStore()
+                return SecretServiceTokenStore(service_name=service_name)
 
             elif backend == TokenStoreBackend.VAULT:
                 from .stores.vault_store import VaultTokenStore

@@ -74,6 +74,71 @@ async def main():
 asyncio.run(main())
 ```
 
+**Using macOS Keychain (Explicit):**
+
+```python
+import asyncio
+from chuk_mcp_client_oauth import OAuthHandler, TokenManager, TokenStoreBackend
+
+async def main():
+    # Explicitly use macOS Keychain for token storage
+    # NOTE: 'keyring' library is automatically installed on macOS/Windows
+    # No password needed - uses macOS Keychain Access
+    token_manager = TokenManager(backend=TokenStoreBackend.KEYCHAIN)
+    handler = OAuthHandler(token_manager=token_manager)
+
+    # Authenticate with a server (tokens stored in macOS Keychain)
+    tokens = await handler.ensure_authenticated_mcp(
+        server_name="notion-mcp",
+        server_url="https://mcp.notion.com/mcp",
+        scopes=["read", "write"]
+    )
+
+    print(f"✅ Authenticated! Token stored in macOS Keychain")
+    print(f"🔑 Access Token: {tokens.access_token[:20]}...")
+
+    # You can verify this in Keychain Access app:
+    # 1. Open Keychain Access
+    # 2. Search for "chuk-oauth"
+    # 3. You'll see "notion-mcp" entry under the "chuk-oauth" service
+
+asyncio.run(main())
+```
+
+**Using a Custom Service Name (for your application):**
+
+```python
+import asyncio
+from chuk_mcp_client_oauth import OAuthHandler, TokenManager, TokenStoreBackend
+
+async def main():
+    # Use your own application name for keychain entries
+    token_manager = TokenManager(
+        backend=TokenStoreBackend.KEYCHAIN,
+        service_name="my-awesome-app"  # Custom service name
+    )
+    handler = OAuthHandler(token_manager=token_manager)
+
+    tokens = await handler.ensure_authenticated_mcp(
+        server_name="notion-mcp",
+        server_url="https://mcp.notion.com/mcp",
+        scopes=["read", "write"]
+    )
+
+    print(f"✅ Authenticated! Token stored under 'my-awesome-app' service")
+
+    # In Keychain Access, search for "my-awesome-app" instead of "chuk-oauth"
+    # This helps organize tokens for your specific application
+
+asyncio.run(main())
+```
+
+**Platform-Specific Token Storage:**
+- **macOS**: `keyring` is automatically installed → Uses macOS Keychain (no password needed)
+- **Windows**: `keyring` is automatically installed → Uses Windows Credential Manager (no password needed)
+- **Linux**: Install with `pip install chuk-mcp-client-oauth[linux]` → Uses Secret Service (GNOME/KDE)
+- **All platforms**: Falls back to encrypted file storage if platform backend unavailable
+
 **That's it!** The library handles:
 - ✅ OAuth server discovery
 - ✅ Dynamic client registration
@@ -83,6 +148,26 @@ asyncio.run(main())
 - ✅ Storing tokens securely
 - ✅ Reusing tokens on subsequent runs
 - ✅ Refreshing expired tokens
+
+**What happens on each run:**
+- **First run**: Opens browser for authentication → Saves tokens to storage
+- **Second run**: Loads cached tokens → No browser needed
+- **Re-running after clearing tokens**: Opens browser again (like first run)
+
+**Quick Reference: Clearing tokens to re-run quickstart**
+```bash
+# Method 1: Using CLI (works for all storage backends)
+uvx chuk-mcp-client-oauth clear notion-mcp
+
+# Method 2: macOS Keychain (if using Keychain storage)
+security delete-generic-password -s "chuk-oauth" -a "notion-mcp"
+
+# Method 3: Delete encrypted file (if using file storage)
+rm ~/.chuk_oauth/tokens/notion-mcp.enc
+rm ~/.chuk_oauth/tokens/notion-mcp_client.json
+
+# After clearing, run the quickstart again - browser will open
+```
 
 ---
 
@@ -284,9 +369,9 @@ For any MCP server, the discovery endpoint is:
 
 **Examples:**
 ```
-https://mcp.notion.com/mcp/.well-known/oauth-authorization-server
-https://mcp.github.com/mcp/.well-known/oauth-authorization-server
-https://your-server.com/mcp/.well-known/oauth-authorization-server
+https://mcp.notion.com/.well-known/oauth-authorization-server
+https://mcp.github.com/.well-known/oauth-authorization-server
+https://your-server.com/.well-known/oauth-authorization-server
 ```
 
 ### What's in the Discovery Document?
@@ -295,15 +380,16 @@ When you fetch the discovery URL, you get a JSON document like this:
 
 ```json
 {
-  "issuer": "https://mcp.notion.com/mcp",
-  "authorization_endpoint": "https://mcp.notion.com/oauth/authorize",
-  "token_endpoint": "https://mcp.notion.com/oauth/token",
-  "registration_endpoint": "https://mcp.notion.com/oauth/register",
-  "scopes_supported": ["read", "write"],
+  "issuer": "https://mcp.notion.com",
+  "authorization_endpoint": "https://mcp.notion.com/authorize",
+  "token_endpoint": "https://mcp.notion.com/token",
+  "registration_endpoint": "https://mcp.notion.com/register",
+  "revocation_endpoint": "https://mcp.notion.com/token",
   "response_types_supported": ["code"],
+  "response_modes_supported": ["query"],
   "grant_types_supported": ["authorization_code", "refresh_token"],
-  "code_challenge_methods_supported": ["S256"],
-  "token_endpoint_auth_methods_supported": ["none"]
+  "code_challenge_methods_supported": ["plain", "S256"],
+  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"]
 }
 ```
 
@@ -325,7 +411,7 @@ tokens = await handler.ensure_authenticated_mcp(
 ```
 
 Behind the scenes:
-1. **Discovery**: Fetches `https://mcp.notion.com/mcp/.well-known/oauth-authorization-server`
+1. **Discovery**: Fetches `https://mcp.notion.com/.well-known/oauth-authorization-server`
 2. **Parse**: Extracts `authorization_endpoint`, `token_endpoint`, etc.
 3. **Validate**: Checks that PKCE is supported
 4. **Cache**: Saves the configuration for future use
@@ -336,22 +422,27 @@ Behind the scenes:
 You can also discover endpoints manually:
 
 ```python
+import asyncio
 from chuk_mcp_client_oauth import MCPOAuthClient
 
-client = MCPOAuthClient(
-    server_url="https://mcp.notion.com/mcp",
-    redirect_uri="http://localhost:8080/callback"
-)
+async def discover_endpoints():
+    client = MCPOAuthClient(
+        server_url="https://mcp.notion.com/mcp",
+        redirect_uri="http://localhost:8080/callback"
+    )
 
-# Discover OAuth configuration
-await client.discover_authorization_server()
+    # Discover OAuth configuration
+    metadata = await client.discover_authorization_server()
 
-# Now you can inspect the discovered endpoints
-print(f"Authorization URL: {client.authorization_url}")
-print(f"Token URL: {client.token_url}")
-print(f"Registration URL: {client.registration_endpoint}")
-print(f"Supported scopes: {client.scopes_supported}")
-print(f"PKCE methods: {client.code_challenge_methods_supported}")
+    # Now you can inspect the discovered endpoints
+    print(f"Authorization URL: {metadata.authorization_endpoint}")
+    print(f"Token URL: {metadata.token_endpoint}")
+    print(f"Registration URL: {metadata.registration_endpoint}")
+    print(f"Supported scopes: {metadata.scopes_supported}")
+    print(f"PKCE methods: {metadata.code_challenge_methods_supported}")
+
+# Run the async function
+asyncio.run(discover_endpoints())
 ```
 
 ### Testing Discovery with curl
@@ -359,19 +450,20 @@ print(f"PKCE methods: {client.code_challenge_methods_supported}")
 You can test if a server supports OAuth discovery:
 
 ```bash
-# Test Notion MCP
-curl https://mcp.notion.com/mcp/.well-known/oauth-authorization-server
+# Test Notion MCP (real server)
+curl https://mcp.notion.com/.well-known/oauth-authorization-server
 
-# Test your own server
-curl https://your-server.com/mcp/.well-known/oauth-authorization-server
+# Test your own MCP server
+curl https://your-server.com/.well-known/oauth-authorization-server
 ```
 
 **Expected response:** JSON document with OAuth configuration
 
 **Common errors:**
-- `404 Not Found` - Server doesn't support OAuth
+- `404 Not Found` - Server doesn't support OAuth discovery
 - `Connection refused` - Server URL is incorrect
 - `Invalid JSON` - Server has misconfigured OAuth
+- `{"error":"invalid_token"}` - Discovery endpoint is incorrectly protected (should be public)
 
 ### Discovery Specification
 
@@ -389,6 +481,7 @@ The discovery endpoint follows **RFC 8414** (OAuth 2.0 Authorization Server Meta
 **Example of checking if a server supports MCP OAuth:**
 
 ```python
+import asyncio
 import httpx
 
 async def check_oauth_support(server_url: str) -> bool:
@@ -429,7 +522,7 @@ async def check_oauth_support(server_url: str) -> bool:
         return False
 
 # Usage
-await check_oauth_support("https://mcp.notion.com/mcp")
+asyncio.run(check_oauth_support("https://mcp.notion.com/mcp"))
 ```
 
 ---
@@ -437,17 +530,40 @@ await check_oauth_support("https://mcp.notion.com/mcp")
 ## 📦 Installation Options
 
 ```bash
-# Basic installation (auto-detects storage backend)
+# Basic installation
+# - macOS: Automatically includes keyring for Keychain support
+# - Windows: Automatically includes keyring for Credential Manager support
+# - Linux: Uses encrypted file storage by default
 uv add chuk-mcp-client-oauth
+
+# Linux with Secret Service support (GNOME/KDE)
+uv add chuk-mcp-client-oauth --extra linux
 
 # With HashiCorp Vault support
 uv add chuk-mcp-client-oauth --extra vault
+
+# All optional features
+uv add chuk-mcp-client-oauth --extra all
 
 # Development installation (includes testing tools)
 git clone https://github.com/chrishayuk/chuk-mcp-client-oauth.git
 cd chuk-mcp-client-oauth
 uv sync --all-extras
 ```
+
+**Platform-specific dependencies:**
+- **macOS/Windows**: `keyring` is installed automatically (no action needed)
+- **Linux**: Add `[linux]` extra for Secret Service support, otherwise uses encrypted files
+- **Enterprise**: Add `[vault]` extra for HashiCorp Vault integration
+
+**What gets installed on your platform:**
+
+| Platform | Automatic Dependencies | Storage Used |
+|----------|----------------------|--------------|
+| macOS | `keyring>=24.0.0` | macOS Keychain (no password) |
+| Windows | `keyring>=24.0.0` | Credential Manager (no password) |
+| Linux | None (encrypted files) | Encrypted files (password prompt) |
+| Linux + [linux] | `keyring>=24.0.0`, `secretstorage>=3.3.0` | Secret Service (no password) |
 
 ---
 
@@ -456,6 +572,7 @@ uv sync --all-extras
 ### Example 1: CLI Tool with Token Management
 
 ```python
+import asyncio
 from chuk_mcp_client_oauth import OAuthHandler
 
 async def connect_to_server(server_name: str, server_url: str):
@@ -477,7 +594,7 @@ async def connect_to_server(server_name: str, server_url: str):
     return tokens
 
 # Usage
-tokens = await connect_to_server("notion-mcp", "https://mcp.notion.com/mcp")
+tokens = asyncio.run(connect_to_server("notion-mcp", "https://mcp.notion.com/mcp"))
 print(f"Connected! Token expires in {tokens.expires_in} seconds")
 ```
 
@@ -530,19 +647,20 @@ data = await mcp.call_server("notion", "/api/pages")
 ### Example 3: Lower-Level Control
 
 ```python
+import asyncio
 from chuk_mcp_client_oauth import MCPOAuthClient
 
 async def manual_oauth_flow():
     """Full control over the OAuth process."""
     client = MCPOAuthClient(
-        server_url="https://mcp.example.com/mcp",
+        server_url="https://mcp.example.com",
         redirect_uri="http://localhost:8080/callback"
     )
 
     # Step 1: Discover OAuth endpoints
-    await client.discover_authorization_server()
-    print(f"📍 Auth URL: {client.authorization_url}")
-    print(f"📍 Token URL: {client.token_url}")
+    metadata = await client.discover_authorization_server()
+    print(f"📍 Auth URL: {metadata.authorization_endpoint}")
+    print(f"📍 Token URL: {metadata.token_endpoint}")
 
     # Step 2: Register as a client
     client_info = await client.register_client(
@@ -564,6 +682,9 @@ async def manual_oauth_flow():
         print(f"🔄 Refreshed: {new_tokens.access_token[:20]}...")
 
     return tokens
+
+# Run the async function
+asyncio.run(manual_oauth_flow())
 ```
 
 ---
@@ -574,13 +695,13 @@ async def manual_oauth_flow():
 
 The library automatically stores tokens in the **most secure location** for your platform:
 
-| Platform | Storage Backend | Description |
-|----------|----------------|-------------|
-| **macOS** | Keychain | Uses the macOS Keychain (same as Safari, Chrome) |
-| **Linux** | Secret Service | Uses GNOME Keyring or KDE Wallet |
-| **Windows** | Credential Manager | Uses Windows Credential Manager |
-| **Vault** | HashiCorp Vault | For enterprise deployments |
-| **Fallback** | Encrypted Files | AES-256 encrypted files (requires password) |
+| Platform | Storage Backend | Auto-Installed | Description |
+|----------|----------------|----------------|-------------|
+| **macOS** | Keychain | ✅ Yes | Uses the macOS Keychain (same as Safari, Chrome) - No password needed |
+| **Windows** | Credential Manager | ✅ Yes | Uses Windows Credential Manager - No password needed |
+| **Linux** | Secret Service | [linux] extra | Uses GNOME Keyring or KDE Wallet - No password needed |
+| **Vault** | HashiCorp Vault | [vault] extra | For enterprise deployments |
+| **Fallback** | Encrypted Files | ✅ Always | AES-256 encrypted files (requires password) |
 
 ### Storage Directory
 
@@ -592,7 +713,108 @@ By default, tokens are stored in:
 For encrypted file storage:
 - Each server gets its own encrypted file: `<server_name>.enc`
 - Files are encrypted with AES-256
+- Client registration stored as: `<server_name>_client.json`
+- Encryption salt stored as: `.salt`
 - You can set a custom password or let it auto-generate
+
+**Example directory structure:**
+```bash
+$ ls -la ~/.chuk_oauth/tokens/
+total 24
+drwx------  5 user  staff  160 Nov  1 12:38 .
+drwxr-xr-x  4 user  staff  128 Nov  1 12:38 ..
+-rw-------  1 user  staff   16 Nov  1 12:38 .salt
+-rw-------  1 user  staff  132 Nov  1 12:38 notion-mcp_client.json
+-rw-------  1 user  staff  504 Nov  1 12:38 notion-mcp.enc
+```
+
+### Inspecting and Clearing Tokens
+
+**Check what tokens are stored:**
+```bash
+# List all stored tokens
+uvx chuk-mcp-client-oauth list
+
+# Get details for a specific server (safely redacted)
+uvx chuk-mcp-client-oauth get notion-mcp
+```
+
+**Clear tokens to re-run demos:**
+```bash
+# Option 1: Clear specific server tokens (recommended)
+uvx chuk-mcp-client-oauth clear notion-mcp
+
+# Option 2: Logout and revoke with server (best practice)
+uvx chuk-mcp-client-oauth logout notion-mcp --url https://mcp.notion.com/mcp
+
+# Option 3: Manual deletion of encrypted files
+rm ~/.chuk_oauth/tokens/notion-mcp.enc
+rm ~/.chuk_oauth/tokens/notion-mcp_client.json
+
+# Option 4: Delete all tokens
+rm -rf ~/.chuk_oauth/
+```
+
+**For macOS Keychain storage:**
+
+Using Keychain Access app (GUI):
+```
+1. Open "Keychain Access" app (in Applications > Utilities)
+2. Make sure "login" keychain is selected (left sidebar)
+3. Search for "chuk-oauth" in the search box (top right)
+4. You'll see entries like "notion-mcp" under the service "chuk-oauth"
+5. Right-click on the entry → "Delete"
+6. Confirm deletion
+```
+
+Using command line:
+```bash
+# Delete specific server token (e.g., notion-mcp)
+security delete-generic-password -s "chuk-oauth" -a "notion-mcp"
+
+# List all tokens stored by this library
+security find-generic-password -s "chuk-oauth"
+
+# Search for all entries (shows details)
+security find-generic-password -s "chuk-oauth" -g
+
+# Delete all tokens for this library (careful!)
+# First, list them to see what you'll delete
+security dump-keychain | grep -A 5 "chuk-oauth"
+# Then delete each one individually using the account name
+```
+
+**Example: Delete notion-mcp token from Keychain**
+```bash
+# Method 1: Using security command
+security delete-generic-password -s "chuk-oauth" -a "notion-mcp"
+
+# Method 2: Using the CLI tool (recommended - also clears client registration)
+uvx chuk-mcp-client-oauth clear notion-mcp
+
+# Verify it's deleted
+security find-generic-password -s "chuk-oauth" -a "notion-mcp"
+# Should return: "The specified item could not be found in the keychain."
+```
+
+**Troubleshooting macOS Keychain:**
+
+If you can't find tokens in Keychain Access:
+```bash
+# 1. Check if tokens are actually in Keychain
+security find-generic-password -s "chuk-oauth"
+
+# 2. If empty, check if using encrypted file storage instead
+ls -la ~/.chuk_oauth/tokens/
+
+# 3. Check which backend is being used
+# Run your app and it should log which storage backend it's using
+```
+
+Common issues:
+- **Can't find in Keychain Access app**: Make sure you're searching in the "login" keychain, not "System"
+- **"Could not be found" error**: Token might already be deleted, or using file storage instead
+- **Permission denied**: You may need to allow terminal/app to access Keychain in System Preferences > Privacy & Security
 
 ### Storage Examples
 
@@ -758,13 +980,13 @@ uvx chuk-mcp-client-oauth clear notion-mcp
 # Install the package first
 uv add chuk-mcp-client-oauth
 
-# Then use the chuk-oauth command
-chuk-oauth auth notion-mcp https://mcp.notion.com/mcp
-chuk-oauth list
-chuk-oauth get notion-mcp
-chuk-oauth test notion-mcp
-chuk-oauth logout notion-mcp --url https://mcp.notion.com/mcp
-chuk-oauth clear notion-mcp
+# Then use the chuk-mcp-client-oauth command
+chuk-mcp-client-oauth auth notion-mcp https://mcp.notion.com/mcp
+chuk-mcp-client-oauth list
+chuk-mcp-client-oauth get notion-mcp
+chuk-mcp-client-oauth test notion-mcp
+chuk-mcp-client-oauth logout notion-mcp --url https://mcp.notion.com/mcp
+chuk-mcp-client-oauth clear notion-mcp
 ```
 
 ### Using examples directory
@@ -1286,6 +1508,7 @@ tokens = await handler.ensure_authenticated_mcp(...)
 ```python
 import asyncio
 from tenacity import retry, stop_after_attempt, wait_exponential
+from chuk_mcp_client_oauth import OAuthHandler
 
 @retry(
     stop=stop_after_attempt(3),
@@ -1299,11 +1522,16 @@ async def connect_with_retry(server_name: str, server_url: str):
         server_url=server_url
     )
 
+async def main():
+    """Main function to run the retry example."""
+    try:
+        tokens = await connect_with_retry("my-server", "https://mcp.example.com")
+        print(f"✅ Connected successfully!")
+    except Exception as e:
+        print(f"❌ Failed after 3 retries: {e}")
+
 # Usage
-try:
-    tokens = await connect_with_retry("my-server", "https://mcp.example.com/mcp")
-except Exception as e:
-    print(f"❌ Failed after 3 retries: {e}")
+asyncio.run(main())
 ```
 
 ### Debugging

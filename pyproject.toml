@@ -25,19 +25,20 @@ dependencies = [
     "httpx>=0.24.0",
     "pydantic>=2.0.0",
     "cryptography>=41.0.0",
+    "keyring>=24.0.0; sys_platform == 'darwin'",  # macOS Keychain support
+    "keyring>=24.0.0; sys_platform == 'win32'",   # Windows Credential Manager support
 ]
 
 [project.scripts]
-chuk-oauth = "chuk_mcp_client_oauth.cli:main"
+chuk-mcp-client-oauth = "chuk_mcp_client_oauth.cli:main"
 
 [project.optional-dependencies]
 vault = ["hvac>=1.0.0"]
-keychain = []  # macOS built-in
-linux = ["secretstorage>=3.3.0"]
-windows = []  # Windows built-in
+linux = ["secretstorage>=3.3.0", "keyring>=24.0.0"]
 all = [
     "hvac>=1.0.0",
     "secretstorage>=3.3.0",
+    "keyring>=24.0.0",
 ]
 
 dev = [

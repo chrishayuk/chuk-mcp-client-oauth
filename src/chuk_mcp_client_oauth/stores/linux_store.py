@@ -12,12 +12,19 @@ from chuk_mcp_client_oauth.secure_token_store import SecureTokenStore, TokenStor
 class SecretServiceTokenStore(SecureTokenStore):
     """Token storage using Linux Secret Service API (GNOME Keyring/KWallet)."""
 
-    SERVICE_NAME = "mcp-cli-oauth"
+    DEFAULT_SERVICE_NAME = "chuk-oauth"
 
-    def __init__(self):
-        """Initialize Secret Service token store."""
+    def __init__(self, service_name: Optional[str] = None):
+        """
+        Initialize Secret Service token store.
+
+        Args:
+            service_name: Custom service name for secret entries (default: "chuk-oauth")
+        """
         if platform.system() != "Linux":
             raise TokenStorageError("Secret Service storage is only available on Linux")
+
+        self.service_name = service_name or self.DEFAULT_SERVICE_NAME
 
         try:
             import keyring
@@ -51,7 +58,7 @@ class SecretServiceTokenStore(SecureTokenStore):
             token_json = json.dumps(tokens.model_dump())
 
             # Store in Secret Service
-            self.keyring.set_password(self.SERVICE_NAME, safe_name, token_json)
+            self.keyring.set_password(self.service_name, safe_name, token_json)
         except Exception as e:
             raise TokenStorageError(f"Failed to store token in Secret Service: {e}")
 
@@ -61,7 +68,7 @@ class SecretServiceTokenStore(SecureTokenStore):
             safe_name = self._sanitize_name(server_name)
 
             # Retrieve from Secret Service
-            token_json = self.keyring.get_password(self.SERVICE_NAME, safe_name)
+            token_json = self.keyring.get_password(self.service_name, safe_name)
 
             if token_json is None:
                 return None
@@ -82,11 +89,11 @@ class SecretServiceTokenStore(SecureTokenStore):
             safe_name = self._sanitize_name(server_name)
 
             # Check if token exists
-            if self.keyring.get_password(self.SERVICE_NAME, safe_name) is None:
+            if self.keyring.get_password(self.service_name, safe_name) is None:
                 return False
 
             # Delete from Secret Service
-            self.keyring.delete_password(self.SERVICE_NAME, safe_name)
+            self.keyring.delete_password(self.service_name, safe_name)
             return True
         except Exception as e:
             raise TokenStorageError(f"Failed to delete token from Secret Service: {e}")
@@ -95,7 +102,7 @@ class SecretServiceTokenStore(SecureTokenStore):
         """Check if tokens exist in Secret Service."""
         try:
             safe_name = self._sanitize_name(server_name)
-            return self.keyring.get_password(self.SERVICE_NAME, safe_name) is not None
+            return self.keyring.get_password(self.service_name, safe_name) is not None
         except Exception:
             return False
 
@@ -105,7 +112,7 @@ class SecretServiceTokenStore(SecureTokenStore):
         """Store raw string value in Secret Service."""
         try:
             safe_key = self._sanitize_name(key)
-            self.keyring.set_password(self.SERVICE_NAME, safe_key, value)
+            self.keyring.set_password(self.service_name, safe_key, value)
         except Exception as e:
             raise TokenStorageError(f"Failed to store value in Secret Service: {e}")
 
@@ -113,7 +120,7 @@ class SecretServiceTokenStore(SecureTokenStore):
         """Retrieve raw string value from Secret Service."""
         try:
             safe_key = self._sanitize_name(key)
-            result = self.keyring.get_password(self.SERVICE_NAME, safe_key)
+            result = self.keyring.get_password(self.service_name, safe_key)
             return str(result) if result is not None else None
         except Exception as e:
             raise TokenStorageError(
@@ -124,9 +131,9 @@ class SecretServiceTokenStore(SecureTokenStore):
         """Delete raw value from Secret Service."""
         try:
             safe_key = self._sanitize_name(key)
-            if self.keyring.get_password(self.SERVICE_NAME, safe_key) is None:
+            if self.keyring.get_password(self.service_name, safe_key) is None:
                 return False
-            self.keyring.delete_password(self.SERVICE_NAME, safe_key)
+            self.keyring.delete_password(self.service_name, safe_key)
             return True
         except Exception as e:
             raise TokenStorageError(f"Failed to delete value from Secret Service: {e}")
