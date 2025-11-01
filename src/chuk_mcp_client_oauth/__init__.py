@@ -16,6 +16,7 @@ from .mcp_oauth import (
     DynamicClientRegistration,
 )
 from .oauth_handler import OAuthHandler
+from .sse import parse_sse_json
 from .token_manager import TokenManager
 from .token_store_factory import TokenStoreBackend, TokenStoreFactory
 from .secure_token_store import SecureTokenStore
@@ -32,6 +33,7 @@ __all__ = [
     "MCPAuthorizationMetadata",
     "DynamicClientRegistration",
     "OAuthHandler",
+    "parse_sse_json",
     "TokenManager",
     "TokenStoreBackend",
     "TokenStoreFactory",

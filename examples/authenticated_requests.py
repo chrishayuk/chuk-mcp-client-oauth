@@ -24,7 +24,7 @@ patterns for OAuth authentication with MCP servers.
 import asyncio
 import uuid
 import httpx
-from chuk_mcp_client_oauth import OAuthHandler
+from chuk_mcp_client_oauth import OAuthHandler, parse_sse_json
 
 
 def safe_display_token(token: str, prefix_len: int = 20, suffix_len: int = 6) -> str:
@@ -57,31 +57,8 @@ def get_mcp_headers(session_id: str = None) -> dict:
     return headers
 
 
-def parse_sse_response(response_text: str) -> dict:
-    """
-    Parse Server-Sent Events (SSE) response format.
-
-    SSE format example:
-        event: message
-        data: {"jsonrpc":"2.0","result":{...}}
-
-    Returns the JSON data from the SSE message.
-    """
-    import json
-
-    lines = response_text.strip().split("\n")
-    data_lines = []
-
-    for line in lines:
-        if line.startswith("data: "):
-            data_lines.append(line[6:])  # Remove 'data: ' prefix
-
-    if data_lines:
-        # Join all data lines (in case JSON spans multiple lines)
-        json_str = "".join(data_lines)
-        return json.loads(json_str)
-
-    raise ValueError("No data found in SSE response")
+# Note: SSE parsing is now handled by the library's parse_sse_json() function
+# No need to define it here - it's imported from chuk_mcp_client_oauth
 
 
 async def initialize_mcp_session(
@@ -118,7 +95,7 @@ async def initialize_mcp_session(
     if "text/event-stream" in content_type:
         # SSE format - extract session ID from header
         session_id = response.headers.get("mcp-session-id", session_id)
-        result = parse_sse_response(response.text)
+        result = parse_sse_json(response.text.strip().splitlines())
     else:
         result = response.json()
 
@@ -246,7 +223,7 @@ async def example_post_request(handler: OAuthHandler):
             session_id = init_response.headers.get("mcp-session-id", session_id)
             print("   📡 SSE response received")
             print(f"   🔑 Session ID: {session_id[:16]}...")
-            init_result = parse_sse_response(init_response.text)
+            init_result = parse_sse_json(init_response.text.strip().splitlines())
         else:
             # Regular JSON response
             init_result = init_response.json()
@@ -296,7 +273,7 @@ async def example_post_request(handler: OAuthHandler):
         # Parse response - might be SSE format
         content_type = tools_response.headers.get("content-type", "")
         if "text/event-stream" in content_type:
-            data = parse_sse_response(tools_response.text)
+            data = parse_sse_json(tools_response.text.strip().splitlines())
         else:
             data = tools_response.json()
         if "result" in data and "tools" in data["result"]:
@@ -377,7 +354,7 @@ async def example_custom_headers(handler: OAuthHandler):
         # Parse response - might be SSE format
         content_type = response.headers.get("content-type", "")
         if "text/event-stream" in content_type:
-            data = parse_sse_response(response.text)
+            data = parse_sse_json(response.text.strip().splitlines())
         else:
             data = response.json()
 
@@ -443,7 +420,7 @@ async def example_manual_401_handling(handler: OAuthHandler):
         # Parse and display resources
         content_type = response.headers.get("content-type", "")
         if "text/event-stream" in content_type:
-            data = parse_sse_response(response.text)
+            data = parse_sse_json(response.text.strip().splitlines())
         else:
             data = response.json()
 
@@ -598,7 +575,7 @@ async def example_token_lifecycle(handler: OAuthHandler):
         # Parse response - might be SSE format
         content_type = response.headers.get("content-type", "")
         if "text/event-stream" in content_type:
-            data = parse_sse_response(response.text)
+            data = parse_sse_json(response.text.strip().splitlines())
         else:
             data = response.json()
 

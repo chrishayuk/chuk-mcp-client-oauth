@@ -62,6 +62,36 @@ Or using pip:
 pip install chuk-mcp-client-oauth
 ```
 
+### 30-Second Minimal Example
+
+```python
+import asyncio
+from chuk_mcp_client_oauth import OAuthHandler
+
+async def main():
+    handler = OAuthHandler()  # Auto keychain/credential manager or encrypted file
+
+    # Authenticate (opens browser once, then caches tokens)
+    await handler.ensure_authenticated_mcp(
+        server_name="notion",
+        server_url="https://mcp.notion.com/mcp",
+        scopes=["read", "write"],
+    )
+
+    # Get ready-to-use headers for any HTTP/SSE/WebSocket call
+    headers = await handler.prepare_headers_for_mcp_server(
+        "notion",
+        "https://mcp.notion.com/mcp"
+    )
+    print(headers["Authorization"][:30], "...")
+
+asyncio.run(main())
+```
+
+**That's it!** Subsequent runs use cached tokens—no browser needed. See [Complete MCP Session](#using-the-tokens---complete-mcp-example) for full JSON-RPC + SSE example.
+
+---
+
 ### Your First OAuth Flow (Complete Example)
 
 ```python
@@ -131,23 +161,7 @@ Now let's use those tokens to actually interact with Notion MCP - listing availa
 ```python
 import asyncio
 import uuid
-import json
-from chuk_mcp_client_oauth import OAuthHandler
-
-def parse_sse_response(response_text: str) -> dict:
-    """Parse Server-Sent Events (SSE) response format."""
-    lines = response_text.strip().split('\n')
-    data_lines = []
-
-    for line in lines:
-        if line.startswith('data: '):
-            data_lines.append(line[6:])  # Remove 'data: ' prefix
-
-    if data_lines:
-        json_str = ''.join(data_lines)
-        return json.loads(json_str)
-
-    raise ValueError("No data found in SSE response")
+from chuk_mcp_client_oauth import OAuthHandler, parse_sse_json
 
 async def list_notion_tools():
     """Complete example: Authenticate and list Notion MCP tools."""
@@ -227,10 +241,10 @@ async def list_notion_tools():
         timeout=30.0
     )
 
-    # Parse SSE response
+    # Parse SSE response (MCP servers often return text/event-stream)
     content_type = tools_response.headers.get('content-type', '')
-    if 'text/event-stream' in content_type:
-        data = parse_sse_response(tools_response.text)
+    if content_type.startswith('text/event-stream'):
+        data = parse_sse_json(tools_response.text.strip().splitlines())
     else:
         data = tools_response.json()
 
@@ -541,7 +555,41 @@ The library implements the **MCP-specified discovery flow** with automatic fallb
 
 ### Device Code Flow (Headless TTY / SSH Agents)
 
-**Coming in v0.2.0** - Perfect for SSH-only boxes, CI runners, and background agents:
+**Coming in v0.2.0** - Perfect for SSH-only boxes, CI runners, and background agents.
+
+**Planned API:**
+
+```python
+import asyncio
+from chuk_mcp_client_oauth import OAuthHandler
+
+async def main():
+    handler = OAuthHandler()
+
+    # Device code flow for headless environments
+    await handler.ensure_authenticated_mcp_device(
+        server_name="notion",
+        server_url="https://mcp.notion.com/mcp",
+        scopes=["read", "write"],
+        prompt=lambda code, url: print(f"🔐 Go to {url} and enter code: {code}")
+    )
+
+    # Rest is identical to auth code flow
+    headers = await handler.prepare_headers_for_mcp_server(
+        "notion",
+        "https://mcp.notion.com/mcp"
+    )
+
+asyncio.run(main())
+```
+
+**Use cases:**
+- SSH-only servers
+- CI/CD pipelines
+- Background agents
+- Shared/headless environments
+
+**Flow diagram:**
 
 ```
 ┌──────────────────┐                          ┌──────────────────────┐                          ┌───────────────┐
@@ -622,24 +670,39 @@ MCP servers publish their OAuth configuration at a **well-known URL**. This is l
 - "Here's where you exchange codes for tokens"
 - "Here's what I support (PKCE, refresh tokens, etc.)"
 
-### The Well-Known Discovery URL
+### MCP-Compliant Discovery (Do This First)
 
-For any MCP server, the discovery endpoint is:
-```
-<server_url>/.well-known/oauth-authorization-server
-```
+**Per the MCP specification**, clients must discover OAuth endpoints via Protected Resource Metadata (RFC 9728):
 
-**Examples:**
-```
-https://mcp.notion.com/.well-known/oauth-authorization-server
-https://mcp.github.com/.well-known/oauth-authorization-server
-https://your-server.com/.well-known/oauth-authorization-server
+**Step 1: Discover Protected Resource Metadata (PRM)**
+```bash
+# MCP-compliant discovery starts here
+GET <mcp_server>/.well-known/oauth-protected-resource
 ```
 
-### What's in the Discovery Document?
+**Example PRM Response:**
+```json
+{
+  "resource": "https://mcp.notion.com/mcp",
+  "authorization_servers": [
+    "https://mcp.notion.com/.well-known/oauth-authorization-server"
+  ],
+  "scopes_supported": ["read", "write"],
+  "bearer_methods_supported": ["header"]
+}
+```
 
-When you fetch the discovery URL, you get a JSON document like this:
+**Key PRM fields:**
+- `resource` - The resource identifier (use this in `resource=` parameter for token requests)
+- `authorization_servers` - Array of AS metadata URLs to fetch next
 
+**Step 2: Fetch Authorization Server Metadata**
+```bash
+# Follow the URL from PRM's authorization_servers[0]
+GET <authorization_server_url>
+```
+
+**Example AS Metadata Response:**
 ```json
 {
   "issuer": "https://mcp.notion.com",
@@ -655,11 +718,69 @@ When you fetch the discovery URL, you get a JSON document like this:
 }
 ```
 
-**Key fields:**
+**Key AS Metadata fields:**
 - `authorization_endpoint` - Where users approve your app
 - `token_endpoint` - Where you exchange codes for tokens
 - `registration_endpoint` - Where you register as a client
 - `code_challenge_methods_supported` - PKCE support (S256 = SHA-256)
+
+**Step 3: Include Resource Indicator in Token Requests**
+
+When requesting tokens, include the `resource` parameter from PRM (RFC 8707):
+
+```http
+POST /token HTTP/1.1
+Host: mcp.notion.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=authorization_code
+&code=AUTH_CODE
+&redirect_uri=http://localhost:8080/callback
+&client_id=CLIENT_ID
+&code_verifier=CODE_VERIFIER
+&resource=https://mcp.notion.com/mcp
+```
+
+This binds the token to the specific MCP resource, preventing token reuse across different servers.
+
+### WWW-Authenticate Fallback
+
+**If PRM discovery fails**, MCP servers **SHOULD** (per MCP spec convention) include the PRM URL in 401/403 responses via the `WWW-Authenticate` header:
+
+> **Note**: The `resource_metadata` parameter is an **MCP-specific convention**, not part of core RFC 6750 (Bearer Token Usage). It extends the standard Bearer authentication scheme to enable OAuth discovery from error responses, as specified in the Model Context Protocol authorization specification.
+
+```http
+HTTP/1.1 401 Unauthorized
+WWW-Authenticate: Bearer realm="mcp",
+  resource_metadata="https://mcp.notion.com/.well-known/oauth-protected-resource"
+```
+
+**Example header formats:**
+```
+WWW-Authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"
+
+WWW-Authenticate: Bearer realm="mcp", error="invalid_token",
+  resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"
+```
+
+The client should:
+1. Parse the `resource_metadata` URL from the header
+2. Fetch the PRM document from that URL
+3. Continue with normal discovery flow (Step 2 above)
+
+### Legacy Fallback (Non-MCP Servers)
+
+For **backward compatibility** with servers that don't implement PRM discovery, the library falls back to direct AS discovery:
+
+```bash
+# Legacy OAuth servers (pre-MCP)
+GET <server_url>/.well-known/oauth-authorization-server
+```
+
+**Discovery priority:**
+1. ✅ **First**: Try PRM at `/.well-known/oauth-protected-resource` (MCP-compliant)
+2. ✅ **Second**: Check `WWW-Authenticate` header on 401/403 responses
+3. ✅ **Third**: Fall back to direct AS discovery (legacy compatibility)
 
 ### How This Library Uses Discovery
 
@@ -672,12 +793,17 @@ tokens = await handler.ensure_authenticated_mcp(
 )
 ```
 
-Behind the scenes:
-1. **Discovery**: Fetches `https://mcp.notion.com/.well-known/oauth-authorization-server`
-2. **Parse**: Extracts `authorization_endpoint`, `token_endpoint`, etc.
-3. **Validate**: Checks that PKCE is supported
-4. **Cache**: Saves the configuration for future use
-5. **Proceed**: Uses the discovered endpoints for OAuth flow
+Behind the scenes (MCP-compliant flow):
+1. **PRM Discovery**: Fetches `https://mcp.notion.com/.well-known/oauth-protected-resource`
+2. **Extract Resource**: Saves the `resource` identifier for token binding (RFC 8707)
+3. **AS Discovery**: Fetches AS metadata from `authorization_servers[0]` URL
+4. **Parse**: Extracts `authorization_endpoint`, `token_endpoint`, etc.
+5. **Validate**: Checks that PKCE is supported
+6. **Cache**: Saves the configuration for future use
+7. **Token Requests**: Includes `resource=` parameter in all token requests
+8. **Proceed**: Uses the discovered endpoints for OAuth flow
+
+**Fallback**: If PRM discovery fails, falls back to direct AS discovery for legacy server compatibility.
 
 ### Manual Discovery (Advanced)
 
@@ -709,29 +835,60 @@ asyncio.run(discover_endpoints())
 
 ### Testing Discovery with curl
 
-You can test if a server supports OAuth discovery:
+You can test if a server supports MCP-compliant OAuth discovery:
 
 ```bash
-# Test Notion MCP (real server)
+# Step 1: Test PRM discovery (MCP-compliant)
+curl https://mcp.notion.com/.well-known/oauth-protected-resource
+
+# Expected response:
+# {
+#   "resource": "https://mcp.notion.com/mcp",
+#   "authorization_servers": ["https://mcp.notion.com/.well-known/oauth-authorization-server"],
+#   "scopes_supported": ["read", "write"]
+# }
+
+# Step 2: Test AS discovery (from PRM's authorization_servers[0])
 curl https://mcp.notion.com/.well-known/oauth-authorization-server
 
+# Expected response: AS metadata with endpoints
+
 # Test your own MCP server
-curl https://your-server.com/.well-known/oauth-authorization-server
+curl https://your-server.com/.well-known/oauth-protected-resource
 ```
 
-**Expected response:** JSON document with OAuth configuration
+**Expected responses:**
+- **PRM**: JSON with `resource`, `authorization_servers`, `scopes_supported`
+- **AS Metadata**: JSON with `authorization_endpoint`, `token_endpoint`, etc.
 
 **Common errors:**
-- `404 Not Found` - Server doesn't support OAuth discovery
+- `404 Not Found` on PRM - Server may not be MCP-compliant (library will fall back to direct AS discovery)
+- `404 Not Found` on both - Server doesn't support OAuth discovery at all
 - `Connection refused` - Server URL is incorrect
 - `Invalid JSON` - Server has misconfigured OAuth
 - `{"error":"invalid_token"}` - Discovery endpoint is incorrectly protected (should be public)
 
+**Testing WWW-Authenticate fallback:**
+```bash
+# Make an unauthenticated request to a protected endpoint
+curl -i https://mcp.example.com/mcp
+
+# Look for header:
+# WWW-Authenticate: Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"
+```
+
 ### Discovery Specification
 
-The discovery endpoint follows **RFC 8414** (OAuth 2.0 Authorization Server Metadata).
+**MCP OAuth discovery follows:**
+- **RFC 9728** - Protected Resource Metadata (PRM) - Primary discovery method
+- **RFC 8414** - OAuth 2.0 Authorization Server Metadata - Secondary discovery from PRM
+- **RFC 8707** - Resource Indicators - Token binding with `resource=` parameter
 
-**Must have:**
+**PRM (/.well-known/oauth-protected-resource) must have:**
+- `resource` - Resource identifier (used in token requests)
+- `authorization_servers` - Array of AS metadata URLs
+
+**AS Metadata (/.well-known/oauth-authorization-server) must have:**
 - `issuer` - Server identifier
 - `authorization_endpoint` - Where to send users
 - `token_endpoint` - Where to get tokens
@@ -739,6 +896,7 @@ The discovery endpoint follows **RFC 8414** (OAuth 2.0 Authorization Server Meta
 **Should have (for MCP):**
 - `registration_endpoint` - Dynamic client registration (RFC 7591)
 - `code_challenge_methods_supported: ["S256"]` - PKCE support
+- `revocation_endpoint` - Token revocation (RFC 7009)
 
 **Example of checking if a server supports MCP OAuth:**
 
@@ -746,37 +904,64 @@ The discovery endpoint follows **RFC 8414** (OAuth 2.0 Authorization Server Meta
 import asyncio
 import httpx
 
-async def check_oauth_support(server_url: str) -> bool:
-    """Check if a server supports MCP OAuth."""
-    discovery_url = f"{server_url}/.well-known/oauth-authorization-server"
+async def check_mcp_oauth_support(server_url: str) -> bool:
+    """Check if a server supports MCP-compliant OAuth."""
+    # Step 1: Check PRM discovery (MCP-compliant)
+    prm_url = f"{server_url}/.well-known/oauth-protected-resource"
 
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(discovery_url)
+            # Try PRM discovery first
+            prm_response = await client.get(prm_url)
 
-            if response.status_code != 200:
-                print(f"❌ No OAuth support (status {response.status_code})")
+            if prm_response.status_code != 200:
+                print(f"⚠️  No PRM support (falling back to legacy discovery)")
+                # Try legacy AS discovery
+                as_url = f"{server_url}/.well-known/oauth-authorization-server"
+                as_response = await client.get(as_url)
+
+                if as_response.status_code != 200:
+                    print(f"❌ No OAuth support at all")
+                    return False
+
+                print("✅ Server supports legacy OAuth (not MCP-compliant)")
+                return True
+
+            prm = prm_response.json()
+
+            # Check required PRM fields
+            if "resource" not in prm or "authorization_servers" not in prm:
+                print("❌ Invalid PRM document")
                 return False
 
-            config = response.json()
+            # Step 2: Check AS metadata from PRM
+            as_url = prm["authorization_servers"][0]
+            as_response = await client.get(as_url)
 
-            # Check required fields
+            if as_response.status_code != 200:
+                print(f"❌ AS metadata not available")
+                return False
+
+            as_config = as_response.json()
+
+            # Check required AS metadata fields
             required = ["authorization_endpoint", "token_endpoint"]
-            if not all(field in config for field in required):
+            if not all(field in as_config for field in required):
                 print("❌ Missing required OAuth endpoints")
                 return False
 
             # Check for PKCE support
-            if "S256" not in config.get("code_challenge_methods_supported", []):
+            if "S256" not in as_config.get("code_challenge_methods_supported", []):
                 print("⚠️  PKCE not supported (less secure)")
 
             # Check for dynamic registration
-            if "registration_endpoint" not in config:
+            if "registration_endpoint" not in as_config:
                 print("⚠️  No dynamic registration (manual setup required)")
 
-            print("✅ Server supports MCP OAuth")
-            print(f"   Auth: {config['authorization_endpoint']}")
-            print(f"   Token: {config['token_endpoint']}")
+            print("✅ Server supports MCP-compliant OAuth")
+            print(f"   Resource: {prm['resource']}")
+            print(f"   Auth: {as_config['authorization_endpoint']}")
+            print(f"   Token: {as_config['token_endpoint']}")
             return True
 
     except Exception as e:
@@ -784,7 +969,7 @@ async def check_oauth_support(server_url: str) -> bool:
         return False
 
 # Usage
-asyncio.run(check_oauth_support("https://mcp.notion.com/mcp"))
+asyncio.run(check_mcp_oauth_support("https://mcp.notion.com/mcp"))
 ```
 
 ---
@@ -1280,6 +1465,97 @@ Storage Backend: KeychainTokenStore
 
 ---
 
+## 💻 CLI Tool
+
+The library includes a command-line interface for managing OAuth tokens and interacting with MCP servers:
+
+### Quick Start
+
+```bash
+# Using uvx (no installation required)
+uvx chuk-mcp-client-oauth --help
+
+# Authenticate with an MCP server
+uvx chuk-mcp-client-oauth auth notion-mcp https://mcp.notion.com/mcp
+
+# List available tools from an MCP server
+uvx chuk-mcp-client-oauth tools notion-mcp https://mcp.notion.com/mcp
+
+# List all servers with tokens
+uvx chuk-mcp-client-oauth list
+
+# Get token for a specific server
+uvx chuk-mcp-client-oauth get notion-mcp
+
+# Test connection
+uvx chuk-mcp-client-oauth test notion-mcp
+
+# Logout (revoke tokens)
+uvx chuk-mcp-client-oauth logout notion-mcp --url https://mcp.notion.com/mcp
+
+# Clear tokens locally
+uvx chuk-mcp-client-oauth clear notion-mcp
+```
+
+### CLI Commands
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `auth` | Authenticate with MCP server | `uvx chuk-mcp-client-oauth auth notion-mcp https://mcp.notion.com/mcp` |
+| `tools` | List available MCP tools | `uvx chuk-mcp-client-oauth tools notion-mcp https://mcp.notion.com/mcp` |
+| `list` | List all stored tokens | `uvx chuk-mcp-client-oauth list` |
+| `get` | View token for a server | `uvx chuk-mcp-client-oauth get notion-mcp` |
+| `test` | Test connection with token | `uvx chuk-mcp-client-oauth test notion-mcp` |
+| `logout` | Revoke and delete tokens | `uvx chuk-mcp-client-oauth logout notion-mcp --url https://mcp.notion.com/mcp` |
+| `clear` | Delete tokens locally | `uvx chuk-mcp-client-oauth clear notion-mcp` |
+
+### List MCP Tools
+
+The `tools` command makes it easy to discover what an MCP server offers:
+
+```bash
+uvx chuk-mcp-client-oauth tools notion-mcp https://mcp.notion.com/mcp
+```
+
+**Output:**
+```
+============================================================
+Listing Tools for notion-mcp
+============================================================
+🔐 Authenticating...
+✅ Authenticated
+
+📋 Initializing MCP session...
+✅ Session initialized: 7b3c8d2f...
+
+📨 Sending initialized notification...
+✅ Notification sent
+
+🔧 Listing available tools...
+
+📦 Found 15 tools:
+
+   • create_page
+     Create a new page in Notion
+
+   • search
+     Search across your Notion workspace
+
+   • get_page
+     Retrieve a specific page by ID
+
+   ... and 12 more
+```
+
+This command:
+- Authenticates with the MCP server (uses cached tokens if available)
+- Initializes a proper MCP session following the protocol
+- Sends the required `initialized` notification
+- Lists all available tools with descriptions
+- Perfect for discovering what an MCP server can do without writing code
+
+---
+
 ## 📚 Working Examples
 
 The library includes complete, working examples:
@@ -1349,6 +1625,18 @@ All examples are **fully functional** and tested with real MCP servers (Notion M
 ---
 
 ## 🔧 API Reference
+
+### Quick Reference
+
+| Class / Function | Purpose | Most Used Methods |
+|-----------------|---------|-------------------|
+| `OAuthHandler` | High-level "just work" client | `ensure_authenticated_mcp()`, `prepare_headers_for_mcp_server()`, `authenticated_request()`, `logout()` |
+| `MCPOAuthClient` | Low-level OAuth controls | `discover_authorization_server()`, `register_client()`, `authorize()`, `refresh_token()`, `revoke_token()` |
+| `TokenManager` | Secure token storage | `save_tokens()`, `load_tokens()`, `has_valid_tokens()`, `delete_tokens()` |
+| `TokenStoreBackend` | Storage backend enum | `AUTO`, `KEYCHAIN`, `ENCRYPTED_FILE`, `VAULT`, `LINUX_SECRET_SERVICE` |
+| `parse_sse_json()` | SSE response parser | Converts `text/event-stream` responses to JSON |
+
+---
 
 ### OAuthHandler (High-Level API)
 
@@ -1481,12 +1769,45 @@ tokens = OAuthTokens(
 
 ## 🔐 Security Features
 
-- ✅ **PKCE Support** - Prevents authorization code interception
-- ✅ **Secure Storage** - Platform-native secure storage (Keychain, etc)
-- ✅ **Token Encryption** - AES-256 for file storage
-- ✅ **Automatic Expiration** - Tracks and validates token expiration
-- ✅ **No Plaintext Storage** - Never stores tokens in plaintext
-- ✅ **Scope Validation** - Ensures requested scopes are granted
+### Built-in Security Guardrails
+
+1. **Loopback-Only Redirect URIs (RFC 8252)**
+   - Default redirect URI: `http://127.0.0.1:<random-port>/callback`
+   - Uses `127.0.0.1` (not `localhost`) to prevent DNS rebinding attacks
+   - Random port selection prevents port hijacking
+   - Custom hosts rejected unless explicitly allowed (advanced use only)
+
+2. **TLS Enforcement**
+   - Public APIs do **not** expose a `verify=False` escape hatch
+   - All OAuth endpoints must use HTTPS (except loopback for callbacks)
+   - For development with custom CAs, pass a custom `httpx.AsyncClient` with trusted CA bundle
+
+3. **Refresh Token Binding**
+   - Refresh tokens only sent to the discovered `token_endpoint` for the **same issuer + resource**
+   - Binds to PRM `resource` identifier (RFC 8707)
+   - Prevents token reuse across different MCP servers
+
+4. **PKCE Enforcement (RFC 7636)**
+   - PKCE with S256 (SHA-256) **always** used for authorization code flow
+   - Code verifier never written to disk (memory-only during flow)
+   - State parameter (256 bits entropy) validates callback authenticity
+   - Prevents authorization code interception attacks
+
+5. **Token Storage Encryption**
+   - Platform-native secure storage (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+   - Fallback: AES-256-GCM encryption with PBKDF2-HMAC-SHA256 (600,000 iterations)
+   - Files created with mode 0600 (owner read/write only)
+   - Unique salt and IV per token file
+
+6. **Automatic Expiration Tracking**
+   - Tracks token expiration timestamps
+   - Validates tokens before use
+   - Automatic refresh when tokens expire
+   - No plaintext storage - all tokens encrypted or in secure OS storage
+
+7. **Scope Validation**
+   - Ensures requested scopes match granted scopes
+   - Prevents scope escalation attacks
 
 ---
 
@@ -2082,7 +2403,24 @@ uv run pytest tests/auth/test_oauth_handler.py -v
 uv run pytest -m "not slow"
 ```
 
-**Test Coverage:** 99%
+**Test Coverage:** 99% (467 tests passing)
+
+### Test Coverage Matrix
+
+| Test Category | What It Validates |
+|--------------|-------------------|
+| **PRM Happy Path** | PRM → AS → Auth Code + PKCE → Token (with `resource=`) |
+| **Legacy AS Discovery** | Direct `.well-known/oauth-authorization-server` fallback |
+| **WWW-Authenticate Bootstrap** | 401 header → PRM URL → discovery flow |
+| **Refresh Rotation** | 401 → refresh token → retry → succeed |
+| **SSE JSON-RPC** | `text/event-stream` parsing into JSON |
+| **Storage Backends** | Keychain/Credential Manager/Secret Service/Encrypted File |
+| **Vault Integration** | Read/write/rotate secrets in HashiCorp Vault |
+| **Resource Indicators** | `resource=` parameter in token/refresh requests |
+| **Token Revocation** | RFC 7009 revoke_token() implementation |
+| **PKCE S256** | Code challenge generation and verification |
+| **Dynamic Registration** | RFC 7591 client registration flow |
+| **Token Expiration** | Automatic expiration tracking and refresh |
 
 ---
 

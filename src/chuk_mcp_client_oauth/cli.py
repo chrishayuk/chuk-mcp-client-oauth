@@ -22,9 +22,10 @@ Usage:
 import argparse
 import asyncio
 import sys
+import uuid
 from typing import Optional
 
-from chuk_mcp_client_oauth import OAuthHandler, TokenManager
+from chuk_mcp_client_oauth import OAuthHandler, TokenManager, parse_sse_json
 
 
 def safe_display_token(token: str, prefix_len: int = 20, suffix_len: int = 6) -> str:
@@ -322,6 +323,136 @@ async def cmd_test(server_name: str):
     return 0
 
 
+async def cmd_tools(server_name: str, server_url: str):
+    """List available tools from an MCP server."""
+    print_header(f"Listing Tools for {server_name}")
+
+    handler = OAuthHandler()
+
+    try:
+        # Step 1: Authenticate
+        print("🔐 Authenticating...")
+        await handler.ensure_authenticated_mcp(
+            server_name=server_name, server_url=server_url
+        )
+        print("✅ Authenticated\n")
+
+        # Step 2: Initialize MCP session
+        print("📋 Initializing MCP session...")
+        session_id = str(uuid.uuid4())
+
+        init_payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"roots": {"listChanged": True}, "sampling": {}},
+                "clientInfo": {"name": "chuk-oauth-cli", "version": "0.1.0"},
+            },
+        }
+
+        init_response = await handler.authenticated_request(
+            server_name=server_name,
+            server_url=server_url,
+            url=server_url,
+            method="POST",
+            json=init_payload,
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+            },
+            timeout=60.0,
+        )
+
+        # Parse init response
+        content_type = init_response.headers.get("content-type", "")
+        if content_type.startswith("text/event-stream"):
+            session_id = init_response.headers.get("mcp-session-id", session_id)
+            init_result = parse_sse_json(init_response.text.strip().splitlines())
+        else:
+            init_result = init_response.json()
+
+        if "error" in init_result:
+            print(f"❌ Initialize error: {init_result['error']}")
+            return 1
+
+        print(f"✅ Session initialized: {session_id[:8]}...\n")
+
+        # Step 3: Send initialized notification
+        print("📨 Sending initialized notification...")
+        notify_payload = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+
+        await handler.authenticated_request(
+            server_name=server_name,
+            server_url=server_url,
+            url=server_url,
+            method="POST",
+            json=notify_payload,
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "Mcp-Session-Id": session_id,
+            },
+            timeout=30.0,
+        )
+        print("✅ Notification sent\n")
+
+        # Step 4: List tools
+        print("🔧 Listing available tools...")
+        tools_payload = {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {},
+        }
+
+        tools_response = await handler.authenticated_request(
+            server_name=server_name,
+            server_url=server_url,
+            url=server_url,
+            method="POST",
+            json=tools_payload,
+            headers={
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json",
+                "Mcp-Session-Id": session_id,
+            },
+            timeout=30.0,
+        )
+
+        # Parse tools response
+        content_type = tools_response.headers.get("content-type", "")
+        if content_type.startswith("text/event-stream"):
+            data = parse_sse_json(tools_response.text.strip().splitlines())
+        else:
+            data = tools_response.json()
+
+        if "result" in data and "tools" in data["result"]:
+            tools = data["result"]["tools"]
+            print(f"\n📦 Found {len(tools)} tools:\n")
+            for tool in tools:
+                print(f"   • {tool.get('name', 'Unknown')}")
+                if "description" in tool:
+                    desc = tool["description"]
+                    print(f"     {desc[:80]}{'...' if len(desc) > 80 else ''}")
+                print()
+            return 0
+        elif "error" in data:
+            print(f"❌ JSON-RPC Error: {data['error']}")
+            return 1
+        else:
+            print(f"⚠️  Unexpected response: {data}")
+            return 1
+
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return 1
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -331,6 +462,7 @@ def main():
 Examples:
   # Using uvx (no installation required)
   uvx chuk-mcp-client-oauth auth notion-mcp https://mcp.notion.com/mcp
+  uvx chuk-mcp-client-oauth tools notion-mcp https://mcp.notion.com/mcp
   uvx chuk-mcp-client-oauth list
   uvx chuk-mcp-client-oauth get notion-mcp
   uvx chuk-mcp-client-oauth test notion-mcp
@@ -339,6 +471,7 @@ Examples:
 
   # Or after installation: chuk-oauth <command>
   chuk-oauth auth notion-mcp https://mcp.notion.com/mcp
+  chuk-oauth tools notion-mcp https://mcp.notion.com/mcp
   chuk-oauth list
         """,
     )
@@ -383,6 +516,13 @@ Examples:
     )
     test_parser.add_argument("server_name", help="Server name")
 
+    # Tools command
+    tools_parser = subparsers.add_parser(
+        "tools", help="List available tools from an MCP server"
+    )
+    tools_parser.add_argument("server_name", help="Server name")
+    tools_parser.add_argument("server_url", help="MCP server URL")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -403,6 +543,8 @@ Examples:
             return asyncio.run(cmd_logout(args.server_name, args.server_url))
         elif args.command == "test":
             return asyncio.run(cmd_test(args.server_name))
+        elif args.command == "tools":
+            return asyncio.run(cmd_tools(args.server_name, args.server_url))
         else:  # pragma: no cover
             # This should never be reached due to argparse validation
             parser.print_help()
