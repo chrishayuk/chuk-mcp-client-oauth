@@ -4,6 +4,8 @@
 import logging
 from typing import Dict, Optional
 
+import httpx
+
 from .mcp_oauth import MCPOAuthClient
 from .oauth_config import OAuthConfig, OAuthTokens
 from .oauth_flow import OAuthFlow
@@ -393,3 +395,91 @@ class OAuthHandler:
         else:
             # No OAuth needed
             return extra_headers.copy() if extra_headers else {}
+
+    async def authenticated_request(
+        self,
+        server_name: str,
+        server_url: str,
+        url: str,
+        method: str = "GET",
+        scopes: Optional[list[str]] = None,
+        retry_on_401: bool = True,
+        **kwargs,
+    ) -> httpx.Response:
+        """
+        Make an authenticated HTTP request to an MCP server with automatic token refresh.
+
+        This method handles the common pattern of making authenticated requests to MCP servers:
+        1. Ensures valid authentication (gets/refreshes tokens as needed)
+        2. Makes the request with the Authorization header
+        3. If 401 Unauthorized is returned, refreshes the token and retries once
+
+        Args:
+            server_name: Name of the MCP server
+            server_url: Base URL of the MCP server (for OAuth discovery)
+            url: Full URL to request
+            method: HTTP method (GET, POST, etc.)
+            scopes: Optional OAuth scopes to request
+            retry_on_401: Whether to automatically retry on 401 with token refresh (default: True)
+            **kwargs: Additional arguments to pass to httpx.request()
+
+        Returns:
+            httpx.Response object
+
+        Raises:
+            httpx.HTTPStatusError: If the request fails (including 401 after retry)
+            Exception: If authentication fails
+
+        Example:
+            ```python
+            handler = OAuthHandler()
+            response = await handler.authenticated_request(
+                server_name="notion",
+                server_url="https://mcp.notion.com/mcp",
+                url="https://mcp.notion.com/mcp/v1/resources",
+                method="GET"
+            )
+            data = response.json()
+            ```
+        """
+        # Ensure we have valid tokens
+        tokens = await self.ensure_authenticated_mcp(server_name, server_url, scopes)
+
+        # Prepare headers with authorization
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = tokens.get_authorization_header()
+
+        async with httpx.AsyncClient() as client:
+            # Make the request
+            response = await client.request(method, url, headers=headers, **kwargs)
+
+            # Handle 401 Unauthorized with automatic token refresh
+            if response.status_code == 401 and retry_on_401:
+                logger.info(
+                    f"Received 401 Unauthorized from {server_name}, refreshing token and retrying"
+                )
+
+                # Clear cached tokens to force refresh
+                if server_name in self._active_tokens:
+                    del self._active_tokens[server_name]
+
+                # Re-authenticate (this will use refresh token if available)
+                tokens = await self.ensure_authenticated_mcp(
+                    server_name, server_url, scopes
+                )
+
+                # Update authorization header with new token
+                headers["Authorization"] = tokens.get_authorization_header()
+
+                # Retry the request once with new token
+                response = await client.request(method, url, headers=headers, **kwargs)
+
+                if response.status_code == 401:
+                    logger.error(
+                        f"Still received 401 after token refresh for {server_name}"
+                    )
+
+            # Raise for any error status codes
+            response.raise_for_status()
+
+            return response

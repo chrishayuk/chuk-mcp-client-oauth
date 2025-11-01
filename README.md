@@ -105,6 +105,188 @@ async def main():
 asyncio.run(main())
 ```
 
+**Using the Tokens - Complete MCP Example:**
+
+Now let's use those tokens to actually interact with Notion MCP - listing available tools:
+
+```python
+import asyncio
+import uuid
+import json
+from chuk_mcp_client_oauth import OAuthHandler
+
+def parse_sse_response(response_text: str) -> dict:
+    """Parse Server-Sent Events (SSE) response format."""
+    lines = response_text.strip().split('\n')
+    data_lines = []
+
+    for line in lines:
+        if line.startswith('data: '):
+            data_lines.append(line[6:])  # Remove 'data: ' prefix
+
+    if data_lines:
+        json_str = ''.join(data_lines)
+        return json.loads(json_str)
+
+    raise ValueError("No data found in SSE response")
+
+async def list_notion_tools():
+    """Complete example: Authenticate and list Notion MCP tools."""
+    handler = OAuthHandler()
+    server_name = "notion-mcp"
+    server_url = "https://mcp.notion.com/mcp"
+
+    # Authenticate (uses cached tokens if available)
+    print("🔐 Authenticating with Notion MCP...")
+    tokens = await handler.ensure_authenticated_mcp(
+        server_name=server_name,
+        server_url=server_url,
+        scopes=["read", "write"]
+    )
+    print(f"✅ Authenticated! Token: {tokens.access_token[:20]}...")
+
+    # Now use the tokens to make authenticated requests
+    session_id = str(uuid.uuid4())
+
+    # Step 1: Initialize MCP session
+    print("\n📋 Initializing MCP session...")
+    init_response = await handler.authenticated_request(
+        server_name=server_name,
+        server_url=server_url,
+        url=server_url,
+        method="POST",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"roots": {"listChanged": True}},
+                "clientInfo": {"name": "quickstart-example", "version": "1.0.0"}
+            }
+        },
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json"
+        },
+        timeout=60.0  # MCP initialization can be slow
+    )
+
+    # Extract session ID from response header
+    session_id = init_response.headers.get('mcp-session-id', session_id)
+    print(f"   ✅ Session initialized: {session_id[:16]}...")
+
+    # Step 2: Send initialized notification
+    await handler.authenticated_request(
+        server_name=server_name,
+        server_url=server_url,
+        url=server_url,
+        method="POST",
+        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "Mcp-Session-Id": session_id
+        },
+        timeout=30.0
+    )
+
+    # Step 3: List tools (this is where we use the Bearer token!)
+    print("\n🔧 Listing available tools...")
+    tools_response = await handler.authenticated_request(
+        server_name=server_name,
+        server_url=server_url,
+        url=server_url,
+        method="POST",
+        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "Mcp-Session-Id": session_id
+            # Note: Authorization: Bearer <token> is automatically added!
+        },
+        timeout=30.0
+    )
+
+    # Parse SSE response
+    content_type = tools_response.headers.get('content-type', '')
+    if 'text/event-stream' in content_type:
+        data = parse_sse_response(tools_response.text)
+    else:
+        data = tools_response.json()
+
+    # Display the tools
+    if "result" in data and "tools" in data["result"]:
+        tools = data["result"]["tools"]
+        print(f"\n📦 Found {len(tools)} Notion tools:")
+        for tool in tools[:5]:  # Show first 5
+            print(f"   • {tool.get('name', 'Unknown')}")
+            if 'description' in tool:
+                desc = tool['description']
+                print(f"     {desc[:80]}{'...' if len(desc) > 80 else ''}")
+        if len(tools) > 5:
+            print(f"   ... and {len(tools) - 5} more")
+
+    print("\n✅ Complete! Your Bearer token was automatically used in all requests.")
+    print(f"   The library added: Authorization: Bearer {tokens.access_token[:20]}...")
+    print("   to every HTTP request above.")
+
+asyncio.run(list_notion_tools())
+```
+
+**Output:**
+```
+🔐 Authenticating with Notion MCP...
+✅ Authenticated! Token: 282c6a79-d66f-402e-a...
+
+📋 Initializing MCP session...
+   ✅ Session initialized: d6b130b8684f5ee9...
+
+🔧 Listing available tools...
+
+📦 Found 15 Notion tools:
+   • notion-search
+     Perform a search over: - "internal": Semantic search over Notion workspace and c...
+   • notion-fetch
+     Retrieves details about a Notion entity (page or database) by URL or ID.
+Provide...
+   • notion-create-pages
+     ## Overview
+Creates one or more Notion pages, with the specified properties and ...
+   • notion-update-page
+     ## Overview
+Update a Notion page's properties or content.
+## Properties
+Notion p...
+   • notion-move-pages
+     Move one or more Notion pages or databases to a new parent.
+   ... and 10 more
+
+✅ Complete! Your Bearer token was automatically used in all requests.
+   The library added: Authorization: Bearer 282c6a79-d66f-402e-a...
+   to every HTTP request above.
+```
+
+**What happened behind the scenes:**
+
+Every HTTP request included your Bearer token:
+```http
+POST /mcp HTTP/1.1
+Host: mcp.notion.com
+Authorization: Bearer 282c6a79-d66f-402e-a8f4-27b1c5d3e6f7...
+Accept: application/json, text/event-stream
+Content-Type: application/json
+Mcp-Session-Id: d6b130b8684f5ee9...
+
+{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}
+```
+
+The `authenticated_request()` method:
+1. ✅ Retrieved your cached tokens (no re-authentication needed)
+2. ✅ Added `Authorization: Bearer <token>` header to every request
+3. ✅ Parsed SSE responses automatically
+4. ✅ Would have refreshed the token if server returned 401
+
 **Using a Custom Service Name (for your application):**
 
 ```python
@@ -1022,7 +1204,31 @@ Storage Backend: KeychainTokenStore
 
 The library includes complete, working examples:
 
-### 1. Basic MCP OAuth (`basic_mcp_oauth.py`)
+### 1. Authenticated Requests (`authenticated_requests.py`) ✅ **NEW!**
+**What it shows:** Complete authenticated requests with SSE support
+```bash
+uv run examples/authenticated_requests.py
+```
+Demonstrates:
+- ✅ **Working httpbin.org example** - REST API authentication
+- ✅ **Complete Notion MCP example** - Full MCP session with SSE support
+- Automatic token refresh on 401
+- SSE (Server-Sent Events) response parsing
+- MCP session initialization and tool listing
+- Custom headers with authentication
+- Manual 401 handling
+- Error scenarios
+- Token lifecycle explanation
+
+**Interactive examples:**
+1. httpbin.org REST API (working demo)
+2. Complete Notion MCP session (15 tools listed)
+3. Custom headers with JSON-RPC
+4. Manual 401 handling
+5. Error handling scenarios
+6. Token lifecycle explanation
+
+### 2. Basic MCP OAuth (`basic_mcp_oauth.py`)
 **What it shows:** Complete OAuth flow from scratch
 ```bash
 uv run examples/basic_mcp_oauth.py
@@ -1030,7 +1236,7 @@ uv run examples/basic_mcp_oauth.py
 uv run examples/basic_mcp_oauth.py https://your-mcp-server.com/mcp
 ```
 
-### 2. OAuth Handler (`oauth_handler_example.py`)
+### 3. OAuth Handler (`oauth_handler_example.py`)
 **What it shows:** High-level API with token caching
 ```bash
 uv run examples/oauth_handler_example.py
@@ -1041,7 +1247,7 @@ Demonstrates:
 - Token validation
 - Header preparation
 
-### 3. Token Storage (`token_storage_example.py`)
+### 4. Token Storage (`token_storage_example.py`)
 **What it shows:** Different storage backends
 ```bash
 uv run examples/token_storage_example.py
@@ -1052,7 +1258,7 @@ Demonstrates:
 - Keychain integration
 - Vault integration
 
-### 4. CLI Tool (`oauth_cli.py`)
+### 5. CLI Tool (`oauth_cli.py`)
 **What it shows:** Complete token management tool
 ```bash
 uv run examples/oauth_cli.py --help
@@ -1232,23 +1438,248 @@ tokens = OAuthTokens(
 | Feature | Support | How It Works |
 |---------|---------|--------------|
 | **Bearer Token Injection** | ✅ | `Authorization: Bearer <token>` header |
-| **HTTP Requests** | ✅ | Standard HTTP headers |
-| **SSE (Server-Sent Events)** | ✅ | Auth header in initial connection |
+| **HTTP Requests** | ✅ | Standard HTTP headers with JSON/JSON-RPC |
+| **SSE (Server-Sent Events)** | ✅ **NEW!** | Auth header in initial connection + SSE response parsing |
 | **WebSocket** | ✅ | Auth header in handshake |
+| **Automatic 401 Retry** | ✅ **NEW!** | Token refresh and request retry on unauthorized |
+| **MCP Session Management** | ✅ **NEW!** | Session initialization, notifications, and session IDs |
+| **Timeout Support** | ✅ **NEW!** | Configurable timeouts for slow MCP operations |
 
 **How tokens are attached to MCP requests:**
 ```python
 # The library adds this header to all MCP HTTP requests:
 headers = {
     "Authorization": f"Bearer {access_token}",
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    "Accept": "application/json, text/event-stream",
+    "Mcp-Session-Id": "<session-id>"  # For MCP session requests
 }
 
-# For SSE/WebSocket, the header is included in the initial connection:
-# GET /mcp/events HTTP/1.1
-# Authorization: Bearer <token>
-# Connection: keep-alive
+# For SSE responses (common in MCP), the library can parse:
+# Response format:
+#   event: message
+#   data: {"jsonrpc":"2.0","result":{...}}
+#
+# Automatically parsed to JSON with parse_sse_response()
 ```
+
+### Making Authenticated Requests with Auto-Refresh
+
+The library provides `authenticated_request()` which handles the complete request lifecycle, including automatic token refresh on 401 responses and SSE (Server-Sent Events) response parsing:
+
+```python
+import asyncio
+from chuk_mcp_client_oauth import OAuthHandler
+
+async def main():
+    handler = OAuthHandler()
+
+    # Make authenticated JSON-RPC request to MCP server
+    # Supports both JSON and SSE response formats
+    response = await handler.authenticated_request(
+        server_name="notion-mcp",
+        server_url="https://mcp.notion.com/mcp",
+        url="https://mcp.notion.com/mcp",
+        method="POST",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        },
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "Mcp-Session-Id": "<session-id>"
+        },
+        timeout=30.0  # Optional timeout in seconds
+    )
+
+    print(f"Status: {response.status_code}")
+
+    # Parse response - automatically handles both JSON and SSE formats
+    if 'text/event-stream' in response.headers.get('content-type', ''):
+        # SSE response - parse it
+        data = parse_sse_response(response.text)
+    else:
+        # Regular JSON response
+        data = response.json()
+
+    print(f"Response: {data}")
+
+asyncio.run(main())
+```
+
+**Complete MCP Session Example:**
+```python
+import asyncio
+import uuid
+from chuk_mcp_client_oauth import OAuthHandler
+
+async def mcp_session_example():
+    handler = OAuthHandler()
+    server_name = "notion-mcp"
+    server_url = "https://mcp.notion.com/mcp"
+    session_id = str(uuid.uuid4())
+
+    # Step 1: Initialize MCP session
+    init_response = await handler.authenticated_request(
+        server_name=server_name,
+        server_url=server_url,
+        url=server_url,
+        method="POST",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"roots": {"listChanged": True}},
+                "clientInfo": {"name": "my-app", "version": "1.0.0"}
+            }
+        },
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json"
+        },
+        timeout=60.0  # MCP initialization can be slow
+    )
+
+    # Extract session ID from response header
+    session_id = init_response.headers.get('mcp-session-id', session_id)
+    print(f"Session initialized: {session_id}")
+
+    # Step 2: Send initialized notification
+    await handler.authenticated_request(
+        server_name=server_name,
+        server_url=server_url,
+        url=server_url,
+        method="POST",
+        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "Mcp-Session-Id": session_id
+        },
+        timeout=30.0
+    )
+
+    # Step 3: List tools
+    tools_response = await handler.authenticated_request(
+        server_name=server_name,
+        server_url=server_url,
+        url=server_url,
+        method="POST",
+        json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "Mcp-Session-Id": session_id
+        },
+        timeout=30.0
+    )
+
+    print(f"Tools: {tools_response.json()}")
+
+asyncio.run(mcp_session_example())
+```
+
+**SSE (Server-Sent Events) Support:**
+
+Many MCP servers return responses in SSE format instead of plain JSON. The library works with both:
+
+```python
+def parse_sse_response(response_text: str) -> dict:
+    """
+    Parse Server-Sent Events (SSE) response format.
+
+    SSE format example:
+        event: message
+        data: {"jsonrpc":"2.0","result":{...}}
+
+    Returns the JSON data from the SSE message.
+    """
+    import json
+
+    lines = response_text.strip().split('\n')
+    data_lines = []
+
+    for line in lines:
+        if line.startswith('data: '):
+            data_lines.append(line[6:])  # Remove 'data: ' prefix
+
+    if data_lines:
+        json_str = ''.join(data_lines)
+        return json.loads(json_str)
+
+    raise ValueError("No data found in SSE response")
+
+# Use with authenticated_request:
+response = await handler.authenticated_request(...)
+
+content_type = response.headers.get('content-type', '')
+if 'text/event-stream' in content_type:
+    data = parse_sse_response(response.text)  # SSE format
+else:
+    data = response.json()  # Regular JSON
+```
+
+**POST requests with JSON:**
+```python
+# Create a new resource
+response = await handler.authenticated_request(
+    server_name="notion-mcp",
+    server_url="https://mcp.notion.com/mcp",
+    url="https://mcp.notion.com/mcp",
+    method="POST",
+    json={"jsonrpc": "2.0", "id": 1, "method": "resources/create", "params": {...}}
+)
+```
+
+**Custom headers:**
+```python
+# Add custom headers to the authenticated request
+response = await handler.authenticated_request(
+    server_name="notion-mcp",
+    server_url="https://mcp.notion.com/mcp",
+    url="https://mcp.notion.com/mcp",
+    method="POST",
+    json={...},
+    headers={
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "Mcp-Session-Id": session_id,
+        "X-Custom-Header": "value"
+    }
+)
+# Both Authorization and custom headers are included
+```
+
+**Disable automatic retry:**
+```python
+# If you want to handle 401 responses yourself
+try:
+    response = await handler.authenticated_request(
+        server_name="notion-mcp",
+        server_url="https://mcp.notion.com/mcp",
+        url="https://mcp.notion.com/mcp",
+        method="POST",
+        json={...},
+        retry_on_401=False  # Don't auto-refresh on 401
+    )
+except httpx.HTTPStatusError as e:
+    if e.response.status_code == 401:
+        print("Unauthorized - handle manually")
+```
+
+**How it works:**
+1. ✅ Ensures you have valid tokens (gets/refreshes if needed)
+2. ✅ Makes the HTTP request with `Authorization: Bearer <token>` header
+3. ✅ Supports both JSON and SSE (Server-Sent Events) response formats
+4. ✅ If server returns `401 Unauthorized`, automatically refreshes the token
+5. ✅ Retries the request once with the new token
+6. ✅ Returns the final response or raises `httpx.HTTPStatusError` if still unauthorized
+7. ✅ Supports custom timeouts for slow operations (e.g., MCP initialization)
 
 ---
 

@@ -96,7 +96,42 @@ The example will:
 
 **Note:** Defaults to Notion MCP if no URL is provided.
 
-### 4. oauth_cli.py ✅ **CLI Tool for Token Management**
+### 4. authenticated_requests.py ✅ **NEW: Fully Working Authenticated Requests!**
+
+Demonstrates making authenticated HTTP requests with automatic token refresh on 401 responses.
+
+```bash
+uv run examples/authenticated_requests.py
+```
+
+**✅ Shows the easiest way to make authenticated API calls to MCP servers!**
+
+This example demonstrates:
+- **Authenticated GET/POST requests** with automatic token management
+- **Automatic 401 handling** - token refresh and retry on unauthorized responses
+- **Custom headers** with authentication
+- **SSE response parsing** for MCP JSON-RPC over Server-Sent Events
+- **Full MCP session management** - initialization and tool listing
+- **Error handling** for common HTTP scenarios
+- **Token lifecycle** during requests
+
+The example includes:
+1. **Working httpbin.org example** - Demonstrates OAuth authentication with REST API
+2. **Complete Notion MCP example** - Full session initialization and tools listing with SSE support
+3. Adding custom headers to authenticated requests
+4. Manual 401 handling (disabling auto-retry)
+5. Common error scenarios
+6. Understanding the token lifecycle
+
+**Key Features:** The `authenticated_request()` method handles everything:
+- ✅ Gets/refreshes tokens automatically
+- ✅ Adds Authorization header
+- ✅ Makes the HTTP request
+- ✅ If 401 → refreshes token → retries once
+- ✅ Works with all HTTP methods (GET, POST, PUT, DELETE, etc.)
+- ✅ Supports both JSON and SSE (Server-Sent Events) responses
+
+### 5. oauth_cli.py ✅ **CLI Tool for Token Management**
 
 A command-line interface for managing OAuth tokens - makes it easy to test OAuth connections.
 

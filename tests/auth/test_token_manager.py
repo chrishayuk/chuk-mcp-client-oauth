@@ -479,17 +479,27 @@ class TestTokenExpiration:
 
     def test_save_tokens_with_expiry_no_issued_at(self, token_manager):
         """Test saving tokens with expiry but no issued_at calculates expiry."""
+        import time
+
         tokens = OAuthTokens(
             access_token="test-token",
             expires_in=3600,
             token_type="Bearer",
+            issued_at=None,  # Explicitly None to test the else branch
         )
 
+        before_save = time.time()
         token_manager.save_tokens("test-server", tokens)
+        after_save = time.time()
 
-        # Check registry metadata has expires_at calculated
+        # Check registry metadata has expires_at calculated from current time
         entry = token_manager.registry.get_entry("test-server", "oauth")
         assert "expires_at" in entry["metadata"]
+
+        # expires_at should be approximately now + 3600
+        expected_min = before_save + 3600
+        expected_max = after_save + 3600
+        assert expected_min <= entry["metadata"]["expires_at"] <= expected_max
 
 
 class TestMultipleTokenTypes:

@@ -731,3 +731,369 @@ class TestOAuthHandler:
 
         # Should return empty dict
         assert headers == {}
+
+
+class TestAuthenticatedRequest:
+    """Test OAuthHandler.authenticated_request() functionality."""
+
+    @pytest.fixture
+    def token_manager(self, tmp_path):
+        """Provide a TokenManager instance."""
+        return TokenManager(
+            backend=TokenStoreBackend.ENCRYPTED_FILE,
+            token_dir=tmp_path / "tokens",
+            password="test-password",
+        )
+
+    @pytest.fixture
+    def handler(self, token_manager):
+        """Provide an OAuthHandler instance."""
+        return OAuthHandler(token_manager=token_manager)
+
+    @pytest.fixture
+    def valid_tokens(self):
+        """Provide valid OAuth tokens."""
+        return OAuthTokens(
+            access_token="test_access_token",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="test_refresh_token",
+        )
+
+    async def test_authenticated_request_success(self, handler, valid_tokens):
+        """Test successful authenticated request."""
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock
+
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+        request_url = "https://example.com/mcp/v1/resources"
+
+        # Mock the ensure_authenticated_mcp to return tokens
+        with patch.object(
+            handler, "ensure_authenticated_mcp", return_value=valid_tokens
+        ):
+            # Mock httpx.AsyncClient
+            mock_response = MagicMock(spec=httpx.Response)
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"data": "test"}
+            mock_response.raise_for_status = MagicMock()
+
+            mock_client = MagicMock()
+            mock_client.request = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                response = await handler.authenticated_request(
+                    server_name=server_name,
+                    server_url=server_url,
+                    url=request_url,
+                    method="GET",
+                )
+
+                assert response.status_code == 200
+                assert response.json() == {"data": "test"}
+
+                # Verify request was made with Authorization header
+                mock_client.request.assert_called_once()
+                call_args = mock_client.request.call_args
+                assert call_args[0][0] == "GET"  # method
+                assert call_args[0][1] == request_url  # url
+                assert (
+                    call_args[1]["headers"]["Authorization"]
+                    == "Bearer test_access_token"
+                )
+
+    async def test_authenticated_request_401_retry_success(self, handler, valid_tokens):
+        """Test 401 response triggers token refresh and successful retry."""
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock
+        import copy
+
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+        request_url = "https://example.com/mcp/v1/resources"
+
+        # Create refreshed tokens
+        refreshed_tokens = OAuthTokens(
+            access_token="refreshed_access_token",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="new_refresh_token",
+        )
+
+        # Store tokens in handler
+        handler._active_tokens[server_name] = valid_tokens
+
+        # First call returns valid tokens, second call (after 401) returns refreshed tokens
+        ensure_auth_mock = AsyncMock(side_effect=[valid_tokens, refreshed_tokens])
+
+        # Capture headers at time of each call
+        captured_headers = []
+
+        async def capture_request(method, url, headers=None, **kwargs):
+            # Deep copy headers to capture their state at call time
+            captured_headers.append(copy.deepcopy(headers))
+            if len(captured_headers) == 1:
+                # First call returns 401
+                mock_401 = MagicMock(spec=httpx.Response)
+                mock_401.status_code = 401
+                return mock_401
+            else:
+                # Second call returns 200
+                mock_200 = MagicMock(spec=httpx.Response)
+                mock_200.status_code = 200
+                mock_200.json.return_value = {"data": "success"}
+                mock_200.raise_for_status = MagicMock()
+                return mock_200
+
+        with patch.object(handler, "ensure_authenticated_mcp", ensure_auth_mock):
+            mock_client = MagicMock()
+            mock_client.request = AsyncMock(side_effect=capture_request)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                response = await handler.authenticated_request(
+                    server_name=server_name,
+                    server_url=server_url,
+                    url=request_url,
+                    method="GET",
+                )
+
+                assert response.status_code == 200
+                assert response.json() == {"data": "success"}
+
+                # Verify ensure_authenticated_mcp was called twice
+                assert ensure_auth_mock.call_count == 2
+
+                # Verify request was made twice (initial + retry)
+                assert mock_client.request.call_count == 2
+
+                # Verify first request used original token
+                assert len(captured_headers) == 2
+                assert (
+                    captured_headers[0]["Authorization"] == "Bearer test_access_token"
+                )
+
+                # Verify second request used refreshed token
+                assert (
+                    captured_headers[1]["Authorization"]
+                    == "Bearer refreshed_access_token"
+                )
+
+    async def test_authenticated_request_401_retry_fails(self, handler, valid_tokens):
+        """Test 401 response on retry raises error."""
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock
+
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+        request_url = "https://example.com/mcp/v1/resources"
+
+        with patch.object(
+            handler, "ensure_authenticated_mcp", return_value=valid_tokens
+        ):
+            # Mock httpx.AsyncClient - both requests return 401
+            mock_401_response = MagicMock(spec=httpx.Response)
+            mock_401_response.status_code = 401
+            mock_401_response.raise_for_status = MagicMock(
+                side_effect=httpx.HTTPStatusError(
+                    "401 Unauthorized", request=MagicMock(), response=mock_401_response
+                )
+            )
+
+            mock_client = MagicMock()
+            mock_client.request = AsyncMock(return_value=mock_401_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                with pytest.raises(httpx.HTTPStatusError, match="401"):
+                    await handler.authenticated_request(
+                        server_name=server_name,
+                        server_url=server_url,
+                        url=request_url,
+                        method="GET",
+                    )
+
+                # Verify request was made twice (initial + retry)
+                assert mock_client.request.call_count == 2
+
+    async def test_authenticated_request_401_no_retry(self, handler, valid_tokens):
+        """Test 401 response with retry_on_401=False raises immediately."""
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock
+
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+        request_url = "https://example.com/mcp/v1/resources"
+
+        with patch.object(
+            handler, "ensure_authenticated_mcp", return_value=valid_tokens
+        ):
+            # Mock httpx.AsyncClient - returns 401
+            mock_401_response = MagicMock(spec=httpx.Response)
+            mock_401_response.status_code = 401
+            mock_401_response.raise_for_status = MagicMock(
+                side_effect=httpx.HTTPStatusError(
+                    "401 Unauthorized", request=MagicMock(), response=mock_401_response
+                )
+            )
+
+            mock_client = MagicMock()
+            mock_client.request = AsyncMock(return_value=mock_401_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                with pytest.raises(httpx.HTTPStatusError, match="401"):
+                    await handler.authenticated_request(
+                        server_name=server_name,
+                        server_url=server_url,
+                        url=request_url,
+                        method="GET",
+                        retry_on_401=False,
+                    )
+
+                # Verify request was only made once (no retry)
+                assert mock_client.request.call_count == 1
+
+    async def test_authenticated_request_with_post_data(self, handler, valid_tokens):
+        """Test authenticated POST request with JSON data."""
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock
+
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+        request_url = "https://example.com/mcp/v1/resources"
+        post_data = {"key": "value"}
+
+        with patch.object(
+            handler, "ensure_authenticated_mcp", return_value=valid_tokens
+        ):
+            # Mock httpx.AsyncClient
+            mock_response = MagicMock(spec=httpx.Response)
+            mock_response.status_code = 201
+            mock_response.json.return_value = {"created": True}
+            mock_response.raise_for_status = MagicMock()
+
+            mock_client = MagicMock()
+            mock_client.request = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                response = await handler.authenticated_request(
+                    server_name=server_name,
+                    server_url=server_url,
+                    url=request_url,
+                    method="POST",
+                    json=post_data,
+                )
+
+                assert response.status_code == 201
+                assert response.json() == {"created": True}
+
+                # Verify request was made with correct method and JSON data
+                call_args = mock_client.request.call_args
+                assert call_args[0][0] == "POST"
+                assert call_args[1]["json"] == post_data
+
+    async def test_authenticated_request_with_custom_headers(
+        self, handler, valid_tokens
+    ):
+        """Test authenticated request with custom headers."""
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock
+
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+        request_url = "https://example.com/mcp/v1/resources"
+        custom_headers = {"X-Custom-Header": "custom-value"}
+
+        with patch.object(
+            handler, "ensure_authenticated_mcp", return_value=valid_tokens
+        ):
+            # Mock httpx.AsyncClient
+            mock_response = MagicMock(spec=httpx.Response)
+            mock_response.status_code = 200
+            mock_response.raise_for_status = MagicMock()
+
+            mock_client = MagicMock()
+            mock_client.request = AsyncMock(return_value=mock_response)
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                response = await handler.authenticated_request(
+                    server_name=server_name,
+                    server_url=server_url,
+                    url=request_url,
+                    method="GET",
+                    headers=custom_headers,
+                )
+
+                assert response.status_code == 200
+
+                # Verify both Authorization and custom headers were sent
+                call_args = mock_client.request.call_args
+                headers = call_args[1]["headers"]
+                assert headers["Authorization"] == "Bearer test_access_token"
+                assert headers["X-Custom-Header"] == "custom-value"
+
+    async def test_authenticated_request_clears_cached_token_on_401(
+        self, handler, valid_tokens
+    ):
+        """Test that 401 response clears cached token before refresh."""
+        import httpx
+        from unittest.mock import AsyncMock, MagicMock
+
+        server_name = "test-server"
+        server_url = "https://example.com/mcp"
+        request_url = "https://example.com/mcp/v1/resources"
+
+        # Store tokens in cache
+        handler._active_tokens[server_name] = valid_tokens
+
+        refreshed_tokens = OAuthTokens(
+            access_token="refreshed_token",
+            token_type="Bearer",
+            expires_in=3600,
+        )
+
+        ensure_auth_mock = AsyncMock(side_effect=[valid_tokens, refreshed_tokens])
+
+        with patch.object(handler, "ensure_authenticated_mcp", ensure_auth_mock):
+            # Mock httpx.AsyncClient
+            mock_401_response = MagicMock(spec=httpx.Response)
+            mock_401_response.status_code = 401
+
+            mock_200_response = MagicMock(spec=httpx.Response)
+            mock_200_response.status_code = 200
+            mock_200_response.raise_for_status = MagicMock()
+
+            mock_client = MagicMock()
+            mock_client.request = AsyncMock(
+                side_effect=[mock_401_response, mock_200_response]
+            )
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                # Verify token is in cache before request
+                assert server_name in handler._active_tokens
+
+                response = await handler.authenticated_request(
+                    server_name=server_name,
+                    server_url=server_url,
+                    url=request_url,
+                    method="GET",
+                )
+
+                assert response.status_code == 200
+
+                # Verify ensure_authenticated_mcp was called twice
+                # (second time should force refresh since we cleared cache)
+                assert ensure_auth_mock.call_count == 2
