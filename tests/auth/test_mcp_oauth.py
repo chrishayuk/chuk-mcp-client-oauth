@@ -4,6 +4,7 @@ import asyncio
 from io import BytesIO
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
 import pytest
 
 from chuk_mcp_client_oauth.mcp_oauth import (
@@ -11,6 +12,29 @@ from chuk_mcp_client_oauth.mcp_oauth import (
     MCPAuthorizationMetadata,
     MCPOAuthClient,
 )
+
+
+def setup_discovery_mocks(mock_client, discovery_response):
+    """
+    Helper to set up discovery mocks for PRM fallback to AS.
+
+    Args:
+        mock_client: The mocked httpx.AsyncClient
+        discovery_response: The AS metadata response dict
+    """
+    # Mock PRM discovery to fail (404 not found), then AS discovery succeeds
+    prm_response = Mock()
+    prm_response.status_code = 404
+    prm_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "Not found", request=Mock(), response=prm_response
+    )
+
+    as_response = Mock()
+    as_response.raise_for_status = Mock()
+    as_response.json = Mock(return_value=discovery_response)
+
+    # Return list of responses for side_effect
+    return [prm_response, as_response]
 
 
 class TestMCPAuthorizationMetadata:
@@ -147,7 +171,7 @@ class TestMCPOAuthClientDiscovery:
 
     @pytest.mark.asyncio
     async def test_discover_authorization_server(self):
-        """Test successful discovery."""
+        """Test successful discovery with fallback to direct AS discovery."""
         client = MCPOAuthClient("https://mcp.example.com/mcp")
 
         discovery_response = {
@@ -158,11 +182,20 @@ class TestMCPOAuthClientDiscovery:
 
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = mock_client_class.return_value.__aenter__.return_value
-            mock_response = Mock()
-            mock_response.raise_for_status = Mock()
-            mock_response.json = Mock(return_value=discovery_response)
-            mock_response.raise_for_status = Mock()
-            mock_client.get = AsyncMock(return_value=mock_response)
+
+            # Mock PRM discovery to fail (404 not found), then AS discovery succeeds
+            prm_response = Mock()
+            prm_response.status_code = 404
+            prm_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+                "Not found", request=Mock(), response=prm_response
+            )
+
+            as_response = Mock()
+            as_response.raise_for_status = Mock()
+            as_response.json = Mock(return_value=discovery_response)
+
+            # First call (PRM) fails, second call (AS) succeeds
+            mock_client.get = AsyncMock(side_effect=[prm_response, as_response])
 
             metadata = await client.discover_authorization_server()
 
@@ -172,13 +205,23 @@ class TestMCPOAuthClientDiscovery:
             )
             assert metadata.token_endpoint == discovery_response["token_endpoint"]
             assert client._auth_metadata == metadata
-            mock_client.get.assert_called_once_with(
-                "https://mcp.example.com/.well-known/oauth-authorization-server"
+
+            # Should have called both PRM and AS endpoints
+            assert mock_client.get.call_count == 2
+            # First call: PRM
+            assert (
+                mock_client.get.call_args_list[0][0][0]
+                == "https://mcp.example.com/.well-known/oauth-protected-resource"
+            )
+            # Second call: AS (fallback)
+            assert (
+                mock_client.get.call_args_list[1][0][0]
+                == "https://mcp.example.com/.well-known/oauth-authorization-server"
             )
 
     @pytest.mark.asyncio
     async def test_discover_authorization_server_http_error(self):
-        """Test discovery with HTTP error."""
+        """Test discovery with HTTP error on both PRM and AS."""
         client = MCPOAuthClient("https://mcp.example.com/mcp")
 
         with patch("httpx.AsyncClient") as mock_client_class:
@@ -186,10 +229,128 @@ class TestMCPOAuthClientDiscovery:
             mock_response = Mock()
             mock_response.raise_for_status = Mock()
             mock_response.raise_for_status.side_effect = Exception("Not found")
+            # Both PRM and AS discovery fail
             mock_client.get = AsyncMock(return_value=mock_response)
 
             with pytest.raises(Exception, match="Not found"):
                 await client.discover_authorization_server()
+
+    @pytest.mark.asyncio
+    async def test_discover_authorization_server_prm_with_base_url(self):
+        """Test PRM discovery when authorization_servers contains base URL (not well-known URL)."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+
+        prm_response_data = {
+            "resource": "https://mcp.example.com",
+            "authorization_servers": [
+                "https://mcp.example.com"
+            ],  # Base URL, not well-known
+            "scopes_supported": ["read", "write"],
+        }
+
+        as_metadata_response = {
+            "authorization_endpoint": "https://mcp.example.com/authorize",
+            "token_endpoint": "https://mcp.example.com/token",
+            "registration_endpoint": "https://mcp.example.com/register",
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = mock_client_class.return_value.__aenter__.return_value
+
+            # Mock PRM discovery to succeed
+            prm_response = Mock()
+            prm_response.raise_for_status = Mock()
+            prm_response.json = Mock(return_value=prm_response_data)
+
+            # Mock AS discovery to succeed
+            as_response = Mock()
+            as_response.raise_for_status = Mock()
+            as_response.json = Mock(return_value=as_metadata_response)
+
+            # First call: PRM succeeds, second call: AS succeeds
+            mock_client.get = AsyncMock(side_effect=[prm_response, as_response])
+
+            metadata = await client.discover_authorization_server()
+
+            # Verify metadata is correct
+            assert (
+                metadata.authorization_endpoint == "https://mcp.example.com/authorize"
+            )
+            assert metadata.token_endpoint == "https://mcp.example.com/token"
+
+            # Verify PRM was stored
+            assert client._prm_metadata is not None
+            assert client._prm_metadata.resource == "https://mcp.example.com"
+
+            # Verify resource indicator was set
+            assert client._resource_indicator == "https://mcp.example.com"
+
+            # Should have called both endpoints
+            assert mock_client.get.call_count == 2
+            # First call: PRM
+            assert (
+                mock_client.get.call_args_list[0][0][0]
+                == "https://mcp.example.com/.well-known/oauth-protected-resource"
+            )
+            # Second call: AS with well-known path appended to base URL
+            assert (
+                mock_client.get.call_args_list[1][0][0]
+                == "https://mcp.example.com/.well-known/oauth-authorization-server"
+            )
+
+    @pytest.mark.asyncio
+    async def test_discover_authorization_server_prm_with_wellknown_url(self):
+        """Test PRM discovery when authorization_servers contains full well-known URL."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+
+        prm_response_data = {
+            "resource": "https://api.example.com",
+            "authorization_servers": [
+                "https://auth.example.com/.well-known/oauth-authorization-server"
+            ],  # Full well-known URL
+        }
+
+        as_metadata_response = {
+            "authorization_endpoint": "https://auth.example.com/authorize",
+            "token_endpoint": "https://auth.example.com/token",
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = mock_client_class.return_value.__aenter__.return_value
+
+            # Mock PRM discovery to succeed
+            prm_response = Mock()
+            prm_response.raise_for_status = Mock()
+            prm_response.json = Mock(return_value=prm_response_data)
+
+            # Mock AS discovery to succeed
+            as_response = Mock()
+            as_response.raise_for_status = Mock()
+            as_response.json = Mock(return_value=as_metadata_response)
+
+            # First call: PRM succeeds, second call: AS succeeds
+            mock_client.get = AsyncMock(side_effect=[prm_response, as_response])
+
+            metadata = await client.discover_authorization_server()
+
+            # Verify metadata is correct
+            assert (
+                metadata.authorization_endpoint == "https://auth.example.com/authorize"
+            )
+            assert metadata.token_endpoint == "https://auth.example.com/token"
+
+            # Should have called both endpoints
+            assert mock_client.get.call_count == 2
+            # First call: PRM
+            assert (
+                mock_client.get.call_args_list[0][0][0]
+                == "https://mcp.example.com/.well-known/oauth-protected-resource"
+            )
+            # Second call: AS using exact URL from PRM (no modification needed)
+            assert (
+                mock_client.get.call_args_list[1][0][0]
+                == "https://auth.example.com/.well-known/oauth-authorization-server"
+            )
 
 
 class TestMCPOAuthClientRegistration:
@@ -274,21 +435,23 @@ class TestMCPOAuthClientRegistration:
 
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = mock_client_class.return_value.__aenter__.return_value
-            mock_get_response = Mock()
-            mock_get_response.json = Mock(return_value=discovery_response)
-            mock_get_response.raise_for_status = Mock()
+
+            # Setup discovery mocks (PRM fails, then AS succeeds)
+            discovery_responses = setup_discovery_mocks(mock_client, discovery_response)
+
             mock_post_response = Mock()
             mock_post_response.json = Mock(return_value=registration_response)
             mock_post_response.raise_for_status = Mock()
 
-            mock_client.get = AsyncMock(return_value=mock_get_response)
+            # PRM fails (404), AS succeeds
+            mock_client.get = AsyncMock(side_effect=discovery_responses)
             mock_client.post = AsyncMock(return_value=mock_post_response)
 
             await client.register_client()
 
-            # Should have called discovery first
-            mock_client.get.assert_called_once()
-            mock_client.post.assert_called_once()
+            # Should have called discovery (PRM + AS fallback) and registration
+            assert mock_client.get.call_count == 2  # PRM + AS
+            mock_client.post.assert_called_once()  # Registration
 
     @pytest.mark.asyncio
     async def test_register_client_no_registration_endpoint(self):
@@ -837,10 +1000,8 @@ class TestMCPOAuthClientAuthorize:
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = mock_client_class.return_value.__aenter__.return_value
 
-            # Mock discovery
-            mock_discovery_response = Mock()
-            mock_discovery_response.json = Mock(return_value=discovery_response)
-            mock_discovery_response.raise_for_status = Mock()
+            # Setup discovery mocks (PRM fails, then AS succeeds)
+            discovery_responses = setup_discovery_mocks(mock_client, discovery_response)
 
             # Mock registration
             mock_reg_response = Mock()
@@ -852,7 +1013,8 @@ class TestMCPOAuthClientAuthorize:
             mock_token_response.json = Mock(return_value=token_response)
             mock_token_response.raise_for_status = Mock()
 
-            mock_client.get = AsyncMock(return_value=mock_discovery_response)
+            # PRM fails (404), AS succeeds
+            mock_client.get = AsyncMock(side_effect=discovery_responses)
             mock_client.post = AsyncMock(
                 side_effect=[mock_reg_response, mock_token_response]
             )
@@ -888,15 +1050,15 @@ class TestMCPOAuthClientAuthorize:
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = mock_client_class.return_value.__aenter__.return_value
 
-            mock_discovery_response = Mock()
-            mock_discovery_response.json = Mock(return_value=discovery_response)
-            mock_discovery_response.raise_for_status = Mock()
+            # Setup discovery mocks (PRM fails, then AS succeeds)
+            discovery_responses = setup_discovery_mocks(mock_client, discovery_response)
 
             mock_reg_response = Mock()
             mock_reg_response.json = Mock(return_value=registration_response)
             mock_reg_response.raise_for_status = Mock()
 
-            mock_client.get = AsyncMock(return_value=mock_discovery_response)
+            # PRM fails (404), AS succeeds
+            mock_client.get = AsyncMock(side_effect=discovery_responses)
             mock_client.post = AsyncMock(return_value=mock_reg_response)
 
             with patch("webbrowser.open"):
@@ -927,15 +1089,15 @@ class TestMCPOAuthClientAuthorize:
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = mock_client_class.return_value.__aenter__.return_value
 
-            mock_discovery_response = Mock()
-            mock_discovery_response.json = Mock(return_value=discovery_response)
-            mock_discovery_response.raise_for_status = Mock()
+            # Setup discovery mocks (PRM fails, then AS succeeds)
+            discovery_responses = setup_discovery_mocks(mock_client, discovery_response)
 
             mock_reg_response = Mock()
             mock_reg_response.json = Mock(return_value=registration_response)
             mock_reg_response.raise_for_status = Mock()
 
-            mock_client.get = AsyncMock(return_value=mock_discovery_response)
+            # PRM fails (404), AS succeeds
+            mock_client.get = AsyncMock(side_effect=discovery_responses)
             mock_client.post = AsyncMock(return_value=mock_reg_response)
 
             with patch("webbrowser.open"):
@@ -971,9 +1133,8 @@ class TestMCPOAuthClientAuthorize:
         with patch("httpx.AsyncClient") as mock_client_class:
             mock_client = mock_client_class.return_value.__aenter__.return_value
 
-            mock_discovery_response = Mock()
-            mock_discovery_response.json = Mock(return_value=discovery_response)
-            mock_discovery_response.raise_for_status = Mock()
+            # Setup discovery mocks (PRM fails, then AS succeeds)
+            discovery_responses = setup_discovery_mocks(mock_client, discovery_response)
 
             mock_reg_response = Mock()
             mock_reg_response.json = Mock(return_value=registration_response)
@@ -983,7 +1144,8 @@ class TestMCPOAuthClientAuthorize:
             mock_token_response.json = Mock(return_value=token_response)
             mock_token_response.raise_for_status = Mock()
 
-            mock_client.get = AsyncMock(return_value=mock_discovery_response)
+            # PRM fails (404), AS succeeds
+            mock_client.get = AsyncMock(side_effect=discovery_responses)
             mock_client.post = AsyncMock(
                 side_effect=[mock_reg_response, mock_token_response]
             )
@@ -1001,6 +1163,210 @@ class TestMCPOAuthClientAuthorize:
 
                     # Verify browser was opened with scopes
                     assert mock_browser.called
+
+
+class TestMCPOAuthClientWWWAuthenticate:
+    """Test WWW-Authenticate header parsing and error response discovery."""
+
+    def test_parse_www_authenticate_header_double_quotes(self):
+        """Test parsing WWW-Authenticate header with double quotes."""
+        header = 'Bearer error="invalid_token", resource_metadata="https://example.com/.well-known/oauth-protected-resource"'
+        url = MCPOAuthClient.parse_www_authenticate_header(header)
+        assert url == "https://example.com/.well-known/oauth-protected-resource"
+
+    def test_parse_www_authenticate_header_single_quotes(self):
+        """Test parsing WWW-Authenticate header with single quotes."""
+        header = "Bearer error='invalid_token', resource_metadata='https://example.com/.well-known/oauth-protected-resource'"
+        url = MCPOAuthClient.parse_www_authenticate_header(header)
+        assert url == "https://example.com/.well-known/oauth-protected-resource"
+
+    def test_parse_www_authenticate_header_no_resource_metadata(self):
+        """Test parsing WWW-Authenticate header without resource_metadata."""
+        header = 'Bearer error="invalid_token"'
+        url = MCPOAuthClient.parse_www_authenticate_header(header)
+        assert url is None
+
+    def test_parse_www_authenticate_header_malformed(self):
+        """Test parsing malformed WWW-Authenticate header."""
+        header = "Bearer resource_metadata=no-quotes"
+        url = MCPOAuthClient.parse_www_authenticate_header(header)
+        # Should return None for malformed header
+        assert url is None
+
+    @pytest.mark.asyncio
+    async def test_discover_from_error_response_401_with_www_authenticate(self):
+        """Test discovering PRM from 401 response with WWW-Authenticate header."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+
+        prm_data = {
+            "resource": "https://api.example.com",
+            "authorization_servers": ["https://auth.example.com"],
+        }
+
+        # Mock error response with WWW-Authenticate header
+        error_response = Mock()
+        error_response.status_code = 401
+        error_response.headers = {
+            "WWW-Authenticate": 'Bearer error="invalid_token", resource_metadata="https://api.example.com/.well-known/oauth-protected-resource"'
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = mock_client_class.return_value.__aenter__.return_value
+
+            # Mock PRM discovery
+            prm_response = Mock()
+            prm_response.raise_for_status = Mock()
+            prm_response.json.return_value = prm_data
+            mock_client.get = AsyncMock(return_value=prm_response)
+
+            prm = await client.discover_from_error_response(error_response)
+
+            assert prm is not None
+            assert prm.resource == "https://api.example.com"
+            assert mock_client.get.called
+
+    @pytest.mark.asyncio
+    async def test_discover_from_error_response_403_with_www_authenticate(self):
+        """Test discovering PRM from 403 response with WWW-Authenticate header."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+
+        prm_data = {
+            "resource": "https://api.example.com",
+            "authorization_servers": ["https://auth.example.com"],
+        }
+
+        # Mock error response with WWW-Authenticate header
+        error_response = Mock()
+        error_response.status_code = 403
+        error_response.headers = {
+            "WWW-Authenticate": 'Bearer resource_metadata="https://api.example.com/.well-known/oauth-protected-resource"'
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = mock_client_class.return_value.__aenter__.return_value
+
+            # Mock PRM discovery
+            prm_response = Mock()
+            prm_response.raise_for_status = Mock()
+            prm_response.json.return_value = prm_data
+            mock_client.get = AsyncMock(return_value=prm_response)
+
+            prm = await client.discover_from_error_response(error_response)
+
+            assert prm is not None
+            assert prm.resource == "https://api.example.com"
+
+    @pytest.mark.asyncio
+    async def test_discover_from_error_response_200_returns_none(self):
+        """Test that non-error status codes return None."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+
+        success_response = Mock()
+        success_response.status_code = 200
+
+        prm = await client.discover_from_error_response(success_response)
+        assert prm is None
+
+    @pytest.mark.asyncio
+    async def test_discover_from_error_response_no_www_authenticate(self):
+        """Test that 401 without WWW-Authenticate returns None."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+
+        error_response = Mock()
+        error_response.status_code = 401
+        error_response.headers = {}
+
+        prm = await client.discover_from_error_response(error_response)
+        assert prm is None
+
+    @pytest.mark.asyncio
+    async def test_discover_from_error_response_prm_discovery_fails(self):
+        """Test that PRM discovery failure from WWW-Authenticate returns None."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+
+        error_response = Mock()
+        error_response.status_code = 401
+        error_response.headers = {
+            "WWW-Authenticate": 'Bearer resource_metadata="https://api.example.com/.well-known/oauth-protected-resource"'
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = mock_client_class.return_value.__aenter__.return_value
+
+            # Mock PRM discovery to fail
+            mock_response = Mock()
+            mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+                "Not found", request=Mock(), response=Mock()
+            )
+            mock_client.get = AsyncMock(return_value=mock_response)
+
+            prm = await client.discover_from_error_response(error_response)
+            assert prm is None
+
+
+class TestMCPOAuthClientResourceIndicators:
+    """Test RFC 8707 Resource Indicators in token operations."""
+
+    @pytest.mark.asyncio
+    async def test_exchange_code_with_resource_indicator(self):
+        """Test token exchange includes resource indicator when available."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+        client._auth_metadata = MCPAuthorizationMetadata(
+            authorization_endpoint="https://example.com/authorize",
+            token_endpoint="https://example.com/token",
+        )
+        client._client_registration = DynamicClientRegistration(client_id="test-client")
+        client._code_verifier = "test-verifier"
+        client._resource_indicator = "https://api.example.com"  # Set resource indicator
+
+        token_response = {
+            "access_token": "test-access-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = mock_client_class.return_value.__aenter__.return_value
+            mock_response = Mock()
+            mock_response.raise_for_status = Mock()
+            mock_response.json.return_value = token_response
+            mock_client.post = AsyncMock(return_value=mock_response)
+
+            await client.exchange_code_for_token("test-code")
+
+            # Verify resource indicator was included in request
+            call_args = mock_client.post.call_args
+            assert call_args[1]["data"]["resource"] == "https://api.example.com"
+
+    @pytest.mark.asyncio
+    async def test_refresh_token_with_resource_indicator(self):
+        """Test token refresh includes resource indicator when available."""
+        client = MCPOAuthClient("https://mcp.example.com/mcp")
+        client._auth_metadata = MCPAuthorizationMetadata(
+            authorization_endpoint="https://example.com/authorize",
+            token_endpoint="https://example.com/token",
+        )
+        client._client_registration = DynamicClientRegistration(client_id="test-client")
+        client._resource_indicator = "https://api.example.com"  # Set resource indicator
+
+        token_response = {
+            "access_token": "new-access-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        }
+
+        with patch("httpx.AsyncClient") as mock_client_class:
+            mock_client = mock_client_class.return_value.__aenter__.return_value
+            mock_response = Mock()
+            mock_response.raise_for_status = Mock()
+            mock_response.json.return_value = token_response
+            mock_client.post = AsyncMock(return_value=mock_response)
+
+            await client.refresh_token("old-refresh-token")
+
+            # Verify resource indicator was included in refresh request
+            call_args = mock_client.post.call_args
+            assert call_args[1]["data"]["resource"] == "https://api.example.com"
 
 
 class TestMCPOAuthClientRevoke:

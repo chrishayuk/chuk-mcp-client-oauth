@@ -27,6 +27,25 @@ MCP (Model Context Protocol) servers can use OAuth 2.0 to control who can access
 
 This library does all of that for you.
 
+### OAuth 2.1 & MCP Compliance
+
+This library implements:
+- ✅ **OAuth 2.1 Best Practices** - Authorization Code + PKCE, no legacy grants
+- ✅ **MCP Authorization Spec** - Protected Resource Metadata discovery (RFC 9728)
+- ✅ **Resource Indicators** - Token binding to prevent reuse (RFC 8707)
+- ✅ **WWW-Authenticate Fallback** - Discovery from 401/403 responses
+- ✅ **Secure Token Storage** - OS keychain, encrypted files, HashiCorp Vault
+- ✅ **Automatic Token Refresh** - Handles expiration transparently
+- 🔄 **Device Code Flow** - Coming in v0.2.0 for headless environments
+
+**Standards Compliance:**
+- [OAuth 2.1 Draft](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-10) - Modern OAuth best practices
+- [RFC 9728](https://datatracker.ietf.org/doc/html/rfc9728) - Protected Resource Metadata
+- [RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707) - Resource Indicators
+- [RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414) - Authorization Server Metadata Discovery
+- [RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591) - Dynamic Client Registration
+- [RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636) - PKCE
+
 ---
 
 ## 🚀 Quick Start (5 minutes)
@@ -406,10 +425,18 @@ This library automates **all of these steps**.
 - Automatically handled by this library
 - You don't need to think about it
 
-**Discovery URL** - Where OAuth configuration is published
-- Standard location: `<server_url>/.well-known/oauth-authorization-server`
-- Contains all OAuth endpoints and capabilities
-- Automatically discovered by this library
+**Discovery** - How the client finds OAuth configuration
+- **MCP-Compliant (RFC 9728)**: Protected Resource Metadata at `/.well-known/oauth-protected-resource`
+  - Points to Authorization Server metadata
+  - Includes resource identifier for token binding
+- **Fallback (Legacy)**: Direct AS discovery at `/.well-known/oauth-authorization-server`
+- **WWW-Authenticate Fallback**: PRM URL from 401/403 response headers
+- Automatically discovered by this library with fallback support
+
+**Resource Indicators (RFC 8707)** - Token binding to specific resources
+- Tokens are bound to the specific MCP server resource
+- Prevents token reuse across different resources
+- Automatically included in token requests
 
 ---
 
@@ -424,40 +451,93 @@ This is the **primary flow** used by this library for interactive applications:
 │  MCP Client      │        │  User        │         │  OAuth 2.1 Server    │        │  MCP Server    │
 │  (CLI / Agent)   │        │  Browser     │         │  (Auth + Token)      │        │               │
 └──┬───────────────┘        └──────┬───────┘         └──────────┬───────────┘        └───────┬───────┘
-   │ 1) GET /.well-known/oauth-authorization-server            │                             │
-   ├──────────────────────────────────────────────────────────▶│                             │
-   │                                                           │ 2) Return endpoints         │
-   │◀───────────────────────────────────────────────────────────┤  (authorize, token, etc.)  │
-   │                                                           │                             │
-   │ 3) Build Auth URL (PKCE: code_challenge)                  │                             │
-   │ 4) Open browser ----------------------------------------▶ │                             │
-   │                                                           │ 5) User login + consent     │
-   │                                                           │◀────────────────────────────┤
-   │                                                           │ 6) Redirect with ?code=...  │
-   │◀───────────────────────────────────────────────────────────┤  to http://127.0.0.1:PORT   │
-   │ 7) Local redirect handler captures code + state           │                             │
-   │ 8) POST /token (code + code_verifier)                     │                             │
-   ├──────────────────────────────────────────────────────────▶│                             │
-   │                                                           │ 9) access_token + refresh   │
-   │◀───────────────────────────────────────────────────────────┤    (expires_in, scopes…)   │
-   │ 10) Store tokens securely (keyring / pluggable)           │                             │
-   │                                                           │                             │
-   │ 11) Connect to MCP with Authorization: Bearer <token>     │                             │
+   │ 1) GET /.well-known/oauth-protected-resource (RFC 9728)   │                             │
    ├────────────────────────────────────────────────────────────────────────────────────────▶│
-   │                                                           │                             │ 12) Session OK
+   │                                                           │ 2) PRM: resource ID,        │
+   │◀────────────────────────────────────────────────────────────────────────────────────────┤    AS URLs
+   │                                                           │                             │
+   │ 3) GET AS metadata from PRM.authorization_servers[0]     │                             │
+   ├──────────────────────────────────────────────────────────▶│                             │
+   │                                                           │ 4) AS metadata: endpoints   │
+   │◀───────────────────────────────────────────────────────────┤                            │
+   │                                                           │                             │
+   │ 5) Build Auth URL (PKCE: code_challenge)                  │                             │
+   │ 6) Open browser ----------------------------------------▶ │                             │
+   │                                                           │ 7) User login + consent     │
+   │                                                           │◀────────────────────────────┤
+   │                                                           │ 8) Redirect with ?code=...  │
+   │◀───────────────────────────────────────────────────────────┤  to http://127.0.0.1:PORT   │
+   │ 9) Local redirect handler captures code + state           │                             │
+   │ 10) POST /token (code + code_verifier + resource=MCP_URL) │                             │
+   ├──────────────────────────────────────────────────────────▶│                             │
+   │                                                           │ 11) access_token + refresh  │
+   │◀───────────────────────────────────────────────────────────┤     (bound to resource)    │
+   │ 12) Store tokens securely (keyring / pluggable)           │                             │
+   │                                                           │                             │
+   │ 13) Connect to MCP with Authorization: Bearer <token>     │                             │
+   ├────────────────────────────────────────────────────────────────────────────────────────▶│
+   │                                                           │                             │ 14) Session OK
    │◀────────────────────────────────────────────────────────────────────────────────────────┤
    │                                                           │                             │
-   │ 13) (When expired) POST /token (refresh_token)            │                             │
+   │ 15) (When expired) POST /token (refresh_token + resource=MCP_URL)                       │
    ├──────────────────────────────────────────────────────────▶│                             │
-   │                                                           │ 14) New access/refresh      │
+   │                                                           │ 16) New access/refresh      │
    │◀───────────────────────────────────────────────────────────┤     -> update secure store │
    │                                                           │                             │
 ```
 
 **Legend:**
 - **PKCE**: `code_challenge = SHA256(code_verifier)` (sent at authorize), `code_verifier` (sent at token)
+- **PRM**: Protected Resource Metadata (RFC 9728) - MCP-compliant discovery
+- **Resource Indicators**: `resource=` parameter binds tokens to specific MCP server (RFC 8707)
 - Tokens are stored in OS keychain (or pluggable secure backend)
 - MCP requests carry `Authorization: Bearer <access_token>`
+
+### MCP-Compliant Discovery Flow (RFC 9728)
+
+The library implements the **MCP-specified discovery flow** with automatic fallback:
+
+```
+🔍 Discovery Attempt 1: Protected Resource Metadata (MCP-Compliant)
+   ┌─────────────────────────────────────────────────────────────┐
+   │ GET /.well-known/oauth-protected-resource                   │
+   │ → Returns: {                                                │
+   │     "resource": "https://mcp.notion.com/mcp",               │
+   │     "authorization_servers": [                              │
+   │       "https://auth.notion.com/.well-known/oauth-as"        │
+   │     ]                                                       │
+   │   }                                                         │
+   └─────────────────────────────────────────────────────────────┘
+                              ↓
+   ┌─────────────────────────────────────────────────────────────┐
+   │ GET https://auth.notion.com/.well-known/oauth-as            │
+   │ → Returns AS metadata (authorization_endpoint, etc.)        │
+   └─────────────────────────────────────────────────────────────┘
+
+❌ If PRM fails (404/500):
+
+🔍 Discovery Attempt 2: Direct AS Discovery (Fallback)
+   ┌─────────────────────────────────────────────────────────────┐
+   │ GET /.well-known/oauth-authorization-server                 │
+   │ → Returns AS metadata directly                              │
+   └─────────────────────────────────────────────────────────────┘
+
+❌ If both fail, check WWW-Authenticate header:
+
+🔍 Discovery Attempt 3: WWW-Authenticate Fallback
+   ┌─────────────────────────────────────────────────────────────┐
+   │ On 401/403 response:                                        │
+   │ WWW-Authenticate: Bearer                                    │
+   │   resource_metadata="https://mcp.example.com/.well-known/..." │
+   │ → Extract PRM URL and try again                             │
+   └─────────────────────────────────────────────────────────────┘
+```
+
+**Why this matters:**
+- ✅ **MCP Spec Compliant**: Follows Model Context Protocol authorization specification
+- ✅ **Token Binding**: Resource indicators prevent token reuse across servers
+- ✅ **Backward Compatible**: Falls back to legacy discovery for older servers
+- ✅ **Automatic**: Library handles all discovery methods transparently
 
 ### Device Code Flow (Headless TTY / SSH Agents)
 

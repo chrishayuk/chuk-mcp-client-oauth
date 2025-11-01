@@ -28,6 +28,23 @@ from .oauth_config import OAuthTokens
 logger = logging.getLogger(__name__)
 
 
+class ProtectedResourceMetadata(BaseModel):
+    """Protected Resource Metadata (RFC 9728).
+
+    Discovered at /.well-known/oauth-protected-resource
+    Points to authorization servers that protect this resource.
+    """
+
+    resource: str  # Resource identifier
+    authorization_servers: list[str]  # List of AS metadata URLs
+    scopes_supported: Optional[list[str]] = Field(default_factory=list)
+    bearer_methods_supported: Optional[list[str]] = Field(
+        default_factory=lambda: ["header"]
+    )
+
+    model_config = {"frozen": False}
+
+
 class MCPAuthorizationMetadata(BaseModel):
     """OAuth Authorization Server Metadata from .well-known endpoint."""
 
@@ -35,6 +52,7 @@ class MCPAuthorizationMetadata(BaseModel):
     token_endpoint: str
     registration_endpoint: Optional[str] = None
     revocation_endpoint: Optional[str] = None  # RFC 7009
+    device_authorization_endpoint: Optional[str] = None  # RFC 8628
     scopes_supported: list[str] = Field(default_factory=list)
     response_types_supported: list[str] = Field(default_factory=lambda: ["code"])
     grant_types_supported: list[str] = Field(
@@ -73,33 +91,180 @@ class MCPOAuthClient:
         """
         self.server_url = server_url.rstrip("/")
         self.redirect_uri = redirect_uri
+        self._prm_metadata: Optional[ProtectedResourceMetadata] = None
         self._auth_metadata: Optional[MCPAuthorizationMetadata] = None
         self._client_registration: Optional[DynamicClientRegistration] = None
         self._code_verifier: Optional[str] = None
         self._auth_result: Optional[Dict[str, str]] = None
+        # Resource indicator for token requests (RFC 8707)
+        self._resource_indicator: Optional[str] = None
 
-    async def discover_authorization_server(self) -> MCPAuthorizationMetadata:
+    @staticmethod
+    def parse_www_authenticate_header(header_value: str) -> Optional[str]:
+        """
+        Parse WWW-Authenticate header to extract resource_metadata URL.
+
+        Per MCP spec, servers may return:
+        WWW-Authenticate: Bearer resource_metadata="https://example.com/.well-known/oauth-protected-resource"
+
+        Args:
+            header_value: Value of WWW-Authenticate header
+
+        Returns:
+            PRM URL if found, None otherwise
+        """
+        # Simple parser for resource_metadata parameter
+        if "resource_metadata=" in header_value:
+            # Extract URL from quotes
+            parts = header_value.split("resource_metadata=")
+            if len(parts) > 1:
+                url_part = parts[1].strip()
+                # Remove quotes
+                if url_part.startswith('"') and '"' in url_part[1:]:
+                    return url_part[1 : url_part.index('"', 1)]
+                elif url_part.startswith("'") and "'" in url_part[1:]:
+                    return url_part[1 : url_part.index("'", 1)]
+        return None
+
+    async def discover_protected_resource(
+        self, prm_url: Optional[str] = None
+    ) -> ProtectedResourceMetadata:
+        """
+        Discover Protected Resource Metadata (RFC 9728).
+
+        Per MCP spec, PRM can be discovered via:
+        1. Default location: /.well-known/oauth-protected-resource
+        2. WWW-Authenticate header on 401/403 responses
+
+        This is the MCP-compliant discovery method.
+
+        Args:
+            prm_url: Optional PRM URL (from WWW-Authenticate header)
+
+        Returns:
+            Protected Resource Metadata
+
+        Raises:
+            httpx.HTTPStatusError: If PRM endpoint returns error
+        """
+        if not prm_url:
+            # Extract the base URL (scheme + host + path)
+            parsed = urllib.parse.urlparse(self.server_url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+            # PRM discovery endpoint (RFC 9728)
+            prm_url = urljoin(base_url, "/.well-known/oauth-protected-resource")
+
+        logger.debug(f"Discovering PRM at: {prm_url}")
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(prm_url)
+            response.raise_for_status()
+            prm = ProtectedResourceMetadata.model_validate(response.json())
+            self._prm_metadata = prm
+            # Set resource indicator for token requests
+            self._resource_indicator = prm.resource
+            logger.debug(f"Discovered resource: {prm.resource}")
+            logger.debug(f"Authorization servers: {prm.authorization_servers}")
+            return prm
+
+    async def discover_from_error_response(
+        self, response: httpx.Response
+    ) -> Optional[ProtectedResourceMetadata]:
+        """
+        Attempt to discover PRM from WWW-Authenticate header in 401/403 response.
+
+        Per MCP spec, servers SHOULD include PRM URL in WWW-Authenticate header:
+        WWW-Authenticate: Bearer resource_metadata="<prm-url>"
+
+        Args:
+            response: 401/403 response from server
+
+        Returns:
+            PRM metadata if discovered, None otherwise
+        """
+        if response.status_code not in (401, 403):
+            return None
+
+        www_auth = response.headers.get("WWW-Authenticate")
+        if not www_auth:
+            logger.debug("No WWW-Authenticate header in 401/403 response")
+            return None
+
+        prm_url = self.parse_www_authenticate_header(www_auth)
+        if prm_url:
+            logger.debug(f"Found PRM URL in WWW-Authenticate: {prm_url}")
+            try:
+                return await self.discover_protected_resource(prm_url)
+            except Exception as e:
+                logger.debug(f"Failed to discover PRM from WWW-Authenticate: {e}")
+
+        return None
+
+    async def discover_authorization_server(
+        self, as_metadata_url: Optional[str] = None
+    ) -> MCPAuthorizationMetadata:
         """
         Discover OAuth authorization server metadata.
 
-        Per MCP spec, this is at /.well-known/oauth-authorization-server
-        relative to the server URL root.
+        MCP-compliant flow:
+        1. First discover PRM (/.well-known/oauth-protected-resource)
+        2. Get AS metadata URL from PRM
+        3. Fetch AS metadata
+
+        Fallback (legacy):
+        - Direct AS discovery at /.well-known/oauth-authorization-server
+
+        Args:
+            as_metadata_url: Optional direct AS metadata URL (from PRM)
 
         Returns:
             Authorization server metadata
         """
-        # Extract the base URL (scheme + host)
-        parsed = urllib.parse.urlparse(self.server_url)
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        # If no AS URL provided, try MCP-compliant discovery first
+        if not as_metadata_url:
+            try:
+                # Try PRM discovery first (MCP-compliant)
+                prm = await self.discover_protected_resource()
+                if prm.authorization_servers:
+                    as_url = prm.authorization_servers[0]
+                    logger.debug(f"Using AS from PRM: {as_url}")
 
-        # Discovery endpoint is at the root
-        discovery_url = urljoin(base_url, "/.well-known/oauth-authorization-server")
+                    # RFC 9728: authorization_servers should contain AS metadata URLs
+                    # However, some servers return base URLs instead. Handle both:
+                    if "/.well-known/" in as_url:
+                        # Already a well-known URL, use directly
+                        as_metadata_url = as_url
+                    else:
+                        # Assume it's a base URL, append well-known path
+                        as_metadata_url = urljoin(
+                            as_url.rstrip("/"),
+                            "/.well-known/oauth-authorization-server",
+                        )
+                        logger.debug(f"Constructing AS metadata URL: {as_metadata_url}")
+            except httpx.HTTPError as e:
+                # Fallback to legacy direct AS discovery
+                logger.debug(
+                    f"PRM discovery failed ({e}), falling back to direct AS discovery"
+                )
+                parsed = urllib.parse.urlparse(self.server_url)
+                base_url = f"{parsed.scheme}://{parsed.netloc}"
+                as_metadata_url = urljoin(
+                    base_url, "/.well-known/oauth-authorization-server"
+                )
+                logger.debug(f"Trying legacy AS discovery at: {as_metadata_url}")
 
+        # Fetch AS metadata
+        if not as_metadata_url:
+            raise ValueError("No AS metadata URL available")
+
+        logger.debug(f"Fetching AS metadata from: {as_metadata_url}")
         async with httpx.AsyncClient() as client:
-            response = await client.get(discovery_url)
+            response = await client.get(as_metadata_url)
             response.raise_for_status()
             metadata = MCPAuthorizationMetadata.model_validate(response.json())
             self._auth_metadata = metadata
+            logger.debug(f"Discovered AS endpoints: {metadata.authorization_endpoint}")
             return metadata
 
     async def register_client(
@@ -295,6 +460,11 @@ class MCPOAuthClient:
             "code_verifier": self._code_verifier,
         }
 
+        # Add resource indicator (RFC 8707) to bind token to this resource
+        if self._resource_indicator:
+            data["resource"] = self._resource_indicator
+            logger.debug(f"Including resource indicator: {self._resource_indicator}")
+
         if self._client_registration.client_secret:
             data["client_secret"] = self._client_registration.client_secret
 
@@ -325,6 +495,13 @@ class MCPOAuthClient:
             "refresh_token": refresh_token,
             "client_id": self._client_registration.client_id,
         }
+
+        # Add resource indicator (RFC 8707) to bind token to this resource
+        if self._resource_indicator:
+            data["resource"] = self._resource_indicator
+            logger.debug(
+                f"Including resource indicator in refresh: {self._resource_indicator}"
+            )
 
         if self._client_registration.client_secret:
             data["client_secret"] = self._client_registration.client_secret
