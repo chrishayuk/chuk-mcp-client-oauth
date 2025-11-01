@@ -642,3 +642,92 @@ class TestOAuthHandler:
 
             # Verify tokens still cleared
             assert not handler.token_manager.has_valid_tokens(server_name)
+
+    async def test_prepare_server_headers_remote_mcp(self, handler):
+        """Test prepare_server_headers with remote MCP server."""
+        from unittest.mock import Mock
+
+        # Create mock server config for remote MCP server (has URL, no command)
+        server_config = Mock()
+        server_config.name = "test-server"
+        server_config.url = "https://example.com/mcp"
+        server_config.command = None
+        server_config.oauth = None
+
+        with patch.object(
+            handler, "prepare_headers_for_mcp_server", new_callable=AsyncMock
+        ) as mock_prepare:
+            mock_prepare.return_value = {"Authorization": "Bearer test_token"}
+
+            headers = await handler.prepare_server_headers(
+                server_config, extra_headers={"X-Custom": "value"}
+            )
+
+            assert headers == {"Authorization": "Bearer test_token"}
+            mock_prepare.assert_called_once_with(
+                server_name="test-server",
+                server_url="https://example.com/mcp",
+                scopes=None,
+                extra_headers={"X-Custom": "value"},
+            )
+
+    async def test_prepare_server_headers_explicit_oauth(self, handler, oauth_config):
+        """Test prepare_server_headers with explicit OAuth config."""
+        from unittest.mock import Mock
+
+        # Create mock server config with explicit OAuth
+        server_config = Mock()
+        server_config.name = "test-server"
+        server_config.url = "https://example.com/mcp"
+        server_config.command = "some-command"
+        server_config.oauth = oauth_config
+
+        with patch.object(
+            handler, "prepare_headers_with_oauth_config", new_callable=AsyncMock
+        ) as mock_prepare:
+            mock_prepare.return_value = {"Authorization": "Bearer test_token"}
+
+            headers = await handler.prepare_server_headers(
+                server_config, extra_headers={"X-Custom": "value"}
+            )
+
+            assert headers == {"Authorization": "Bearer test_token"}
+            mock_prepare.assert_called_once_with(
+                server_name="test-server",
+                oauth_config=oauth_config,
+                extra_headers={"X-Custom": "value"},
+            )
+
+    async def test_prepare_server_headers_no_oauth(self, handler):
+        """Test prepare_server_headers with no OAuth (local server)."""
+        from unittest.mock import Mock
+
+        # Create mock server config without OAuth
+        server_config = Mock()
+        server_config.name = "test-server"
+        server_config.url = None
+        server_config.command = "local-command"
+        server_config.oauth = None
+
+        headers = await handler.prepare_server_headers(
+            server_config, extra_headers={"X-Custom": "value"}
+        )
+
+        # Should return copy of extra headers
+        assert headers == {"X-Custom": "value"}
+
+    async def test_prepare_server_headers_no_oauth_no_extras(self, handler):
+        """Test prepare_server_headers with no OAuth and no extra headers."""
+        from unittest.mock import Mock
+
+        # Create mock server config without OAuth
+        server_config = Mock()
+        server_config.name = "test-server"
+        server_config.url = None
+        server_config.command = "local-command"
+        server_config.oauth = None
+
+        headers = await handler.prepare_server_headers(server_config)
+
+        # Should return empty dict
+        assert headers == {}

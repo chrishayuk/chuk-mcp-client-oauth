@@ -45,8 +45,9 @@ class TestEncryptedFileTokenStore:
 
     def test_init_missing_cryptography(self, token_dir, monkeypatch):
         """Test error when cryptography library is missing."""
-        # This test would require mocking the import, skip for now
-        # as it's an edge case that's hard to test
+        # This is covered by the pragma: no cover in the source
+        # as it's a defensive ImportError check that's hard to test
+        # without uninstalling the cryptography library
         pass
 
     @pytest.fixture

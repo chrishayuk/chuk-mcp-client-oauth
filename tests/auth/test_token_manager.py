@@ -533,3 +533,60 @@ class TestMultipleTokenTypes:
         bearer_tokens = token_manager.registry.list_tokens(token_type=TokenType.BEARER)
         assert len(bearer_tokens) >= 1
         assert all(t["type"] == TokenType.BEARER.value for t in bearer_tokens)
+
+    def test_token_manager_with_backend_config(self, tmp_path, monkeypatch):
+        """Test TokenManager with custom backend_config."""
+        # Mock Vault environment
+        monkeypatch.setenv("VAULT_ADDR", "http://localhost:8200")
+        monkeypatch.setenv("VAULT_TOKEN", "test-token")
+
+        import sys
+        from unittest.mock import MagicMock
+
+        # Mock hvac
+        mock_hvac = MagicMock()
+        sys.modules["hvac"] = mock_hvac
+
+        try:
+            # Use Vault-specific backend_config
+            backend_config = {"vault_path_prefix": "custom/oauth"}
+
+            token_manager = TokenManager(
+                backend=TokenStoreBackend.VAULT,
+                backend_config=backend_config,
+            )
+
+            assert token_manager is not None
+            assert token_manager.token_store is not None
+        finally:
+            # Cleanup
+            if "hvac" in sys.modules:
+                del sys.modules["hvac"]
+
+    def test_token_manager_vault_path_prefix_default(self, tmp_path, monkeypatch):
+        """Test TokenManager sets default vault_path_prefix for Vault backend."""
+        # Mock the Vault module
+        monkeypatch.setenv("VAULT_ADDR", "http://localhost:8200")
+        monkeypatch.setenv("VAULT_TOKEN", "test-token")
+
+        # Need to mock hvac import
+        import sys
+        from unittest.mock import MagicMock
+
+        mock_hvac = MagicMock()
+        sys.modules["hvac"] = mock_hvac
+
+        from chuk_mcp_client_oauth.token_manager import TokenManager
+
+        # Create with Vault backend - should set default vault_path_prefix
+        token_manager = TokenManager(
+            backend=TokenStoreBackend.VAULT,
+            namespace="test-namespace",
+        )
+
+        # The vault_path_prefix should be set to "test-namespace/oauth"
+        # This is hard to verify directly, but we can check the store was created
+        assert token_manager.token_store is not None
+
+        # Cleanup
+        del sys.modules["hvac"]

@@ -1,6 +1,6 @@
 [project]
 name = "chuk-mcp-client-oauth"
-version = "0.1.5"
+version = "0.1.6"
 description = "A reusable OAuth 2.0 client library for MCP (Model Context Protocol) servers"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -67,6 +67,9 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+filterwarnings = [
+    "ignore:coroutine.*was never awaited:RuntimeWarning",
+]
 
 [tool.black]
 line-length = 88

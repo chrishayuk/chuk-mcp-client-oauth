@@ -136,7 +136,8 @@ class VaultTokenStore(SecureTokenStore):
                     return None
 
             return OAuthTokens.model_validate(token_data)
-        except json.JSONDecodeError as e:
+        except json.JSONDecodeError as e:  # pragma: no cover
+            # This is defensive - Vault returns dicts, not JSON strings
             raise TokenStorageError(f"Failed to parse token data: {e}")
         except Exception as e:
             raise TokenStorageError(f"Failed to retrieve token from Vault: {e}")

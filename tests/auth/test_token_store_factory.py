@@ -427,6 +427,28 @@ class TestTokenStoreFactoryGetAvailableBackends:
             if hvac_backup is not None:
                 sys.modules["hvac"] = hvac_backup
 
+    @patch.dict(os.environ, {"VAULT_ADDR": "http://vault:8200", "VAULT_TOKEN": "test"})
+    def test_get_available_with_vault_and_hvac(self):
+        """Test Vault backend available when hvac is installed."""
+        import sys
+        from unittest.mock import MagicMock
+
+        # Mock hvac module
+        mock_hvac = MagicMock()
+        sys.modules["hvac"] = mock_hvac
+
+        try:
+            backends = TokenStoreFactory.get_available_backends()
+
+            # Vault should be in the list
+            assert TokenStoreBackend.VAULT in backends
+            # Encrypted file should also be available
+            assert TokenStoreBackend.ENCRYPTED_FILE in backends
+        finally:
+            # Cleanup
+            if "hvac" in sys.modules:
+                del sys.modules["hvac"]
+
     def test_get_available_without_cryptography(self):
         """Test getting available backends without cryptography."""
         import sys

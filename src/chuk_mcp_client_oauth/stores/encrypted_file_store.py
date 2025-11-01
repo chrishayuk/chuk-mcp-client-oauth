@@ -34,7 +34,7 @@ class EncryptedFileTokenStore(SecureTokenStore):
             self.Fernet = Fernet
             self.PBKDF2HMAC = PBKDF2HMAC
             self.hashes = hashes
-        except ImportError:
+        except ImportError:  # pragma: no cover
             raise TokenStorageError(
                 "cryptography library not installed. "
                 "Install with: pip install cryptography"

@@ -403,7 +403,8 @@ Examples:
             return asyncio.run(cmd_logout(args.server_name, args.server_url))
         elif args.command == "test":
             return asyncio.run(cmd_test(args.server_name))
-        else:
+        else:  # pragma: no cover
+            # This should never be reached due to argparse validation
             parser.print_help()
             return 1
 

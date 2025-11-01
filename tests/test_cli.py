@@ -535,11 +535,15 @@ class TestMain:
     def test_main_auth_command(self):
         """Test main with auth command."""
         with patch("sys.argv", ["cli.py", "auth", "test-server", "https://test.com"]):
-            with patch("chuk_mcp_client_oauth.cli.asyncio.run") as mock_run:
-                mock_run.return_value = 0
-                result = main()
-                assert result == 0
-                mock_run.assert_called_once()
+            with patch(
+                "chuk_mcp_client_oauth.cli.cmd_auth", new_callable=AsyncMock
+            ) as mock_auth:
+                mock_auth.return_value = 0
+                with patch("chuk_mcp_client_oauth.cli.asyncio.run") as mock_run:
+                    mock_run.return_value = 0
+                    result = main()
+                    assert result == 0
+                    mock_run.assert_called_once()
 
     def test_main_get_command(self):
         """Test main with get command."""
@@ -573,18 +577,26 @@ class TestMain:
         with patch(
             "sys.argv", ["cli.py", "logout", "test-server", "--url", "https://test.com"]
         ):
-            with patch("chuk_mcp_client_oauth.cli.asyncio.run") as mock_run:
-                mock_run.return_value = 0
-                result = main()
-                assert result == 0
+            with patch(
+                "chuk_mcp_client_oauth.cli.cmd_logout", new_callable=AsyncMock
+            ) as mock_logout:
+                mock_logout.return_value = 0
+                with patch("chuk_mcp_client_oauth.cli.asyncio.run") as mock_run:
+                    mock_run.return_value = 0
+                    result = main()
+                    assert result == 0
 
     def test_main_test_command(self):
         """Test main with test command."""
         with patch("sys.argv", ["cli.py", "test", "test-server"]):
-            with patch("chuk_mcp_client_oauth.cli.asyncio.run") as mock_run:
-                mock_run.return_value = 0
-                result = main()
-                assert result == 0
+            with patch(
+                "chuk_mcp_client_oauth.cli.cmd_test", new_callable=AsyncMock
+            ) as mock_test:
+                mock_test.return_value = 0
+                with patch("chuk_mcp_client_oauth.cli.asyncio.run") as mock_run:
+                    mock_run.return_value = 0
+                    result = main()
+                    assert result == 0
 
     def test_main_keyboard_interrupt(self):
         """Test main with keyboard interrupt."""
@@ -620,7 +632,36 @@ class TestMain:
                 "write",
             ],
         ):
-            with patch("chuk_mcp_client_oauth.cli.asyncio.run") as mock_run:
-                mock_run.return_value = 0
-                result = main()
-                assert result == 0
+            with patch(
+                "chuk_mcp_client_oauth.cli.cmd_auth", new_callable=AsyncMock
+            ) as mock_auth:
+                mock_auth.return_value = 0
+                with patch("chuk_mcp_client_oauth.cli.asyncio.run") as mock_run:
+                    mock_run.return_value = 0
+                    result = main()
+                    assert result == 0
+
+    def test_main_invalid_command(self):
+        """Test main with invalid command."""
+        with patch("sys.argv", ["cli.py", "invalid"]):
+            # argparse will raise SystemExit with code 2 for invalid command
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 2
+
+    def test_main_entry_point(self):
+        """Test __main__ entry point."""
+        # Test that the if __name__ == "__main__" block works
+        import subprocess
+        import sys
+
+        # Run the CLI module as a script
+        result = subprocess.run(
+            [sys.executable, "-m", "chuk_mcp_client_oauth.cli", "--help"],
+            capture_output=True,
+            text=True,
+        )
+
+        # Should exit successfully with help text
+        assert result.returncode == 0
+        assert "OAuth Token Manager CLI" in result.stdout

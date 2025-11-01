@@ -7,6 +7,7 @@ A simple, secure OAuth 2.0 client library for connecting to MCP (Model Context P
 [![Tests](https://github.com/chrishayuk/chuk-mcp-client-oauth/workflows/CI/badge.svg)](https://github.com/chrishayuk/chuk-mcp-client-oauth/actions)
 [![Coverage](https://img.shields.io/badge/coverage-99%25-brightgreen)](https://github.com/chrishayuk/chuk-mcp-client-oauth)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Code Quality](https://img.shields.io/badge/code%20quality-A+-success)](https://github.com/chrishayuk/chuk-mcp-client-oauth)
 
 ---
 

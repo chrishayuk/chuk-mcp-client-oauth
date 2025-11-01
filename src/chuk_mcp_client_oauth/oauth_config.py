@@ -12,9 +12,10 @@ class OAuthConfig(BaseModel):
     # OAuth endpoints
     authorization_url: str
     token_url: str
+    registration_url: Optional[str] = None  # For dynamic client registration
 
-    # Client credentials
-    client_id: str
+    # Client credentials (optional when using dynamic registration)
+    client_id: Optional[str] = None
     client_secret: Optional[str] = None  # Not required for public clients
 
     # OAuth parameters
