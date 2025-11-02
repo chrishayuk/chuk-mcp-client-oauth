@@ -243,7 +243,7 @@ async def list_notion_tools():
 
     # Parse SSE response (MCP servers often return text/event-stream)
     content_type = tools_response.headers.get('content-type', '')
-    if content_type.startswith('text/event-stream'):
+    if 'text/event-stream' in content_type:
         data = parse_sse_json(tools_response.text.strip().splitlines())
     else:
         data = tools_response.json()

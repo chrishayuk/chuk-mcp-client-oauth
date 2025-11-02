@@ -58,6 +58,13 @@ class OAuthHandler:
             self._active_tokens[server_name] = stored_tokens
             return stored_tokens
 
+        # If we have expired tokens WITHOUT a refresh token, clear them immediately
+        # If we have a refresh token, we'll try to refresh first before clearing
+        if stored_tokens and stored_tokens.is_expired() and not stored_tokens.refresh_token:
+            logger.info(f"Clearing expired tokens for {server_name} (no refresh token available)")
+            self.token_manager.delete_tokens(server_name)
+            stored_tokens = None
+
         # Create MCP OAuth client
         mcp_client = MCPOAuthClient(server_url)
 
@@ -82,6 +89,9 @@ class OAuthHandler:
                 return tokens
             except Exception as e:
                 logger.warning(f"Token refresh failed for {server_name}: {e}")
+                # Clear invalid tokens to force full auth
+                logger.info(f"Clearing invalid tokens for {server_name}")
+                self.token_manager.delete_tokens(server_name)
                 # Fall through to full auth flow
 
         # Perform full MCP OAuth flow
