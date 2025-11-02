@@ -60,8 +60,14 @@ class OAuthHandler:
 
         # If we have expired tokens WITHOUT a refresh token, clear them immediately
         # If we have a refresh token, we'll try to refresh first before clearing
-        if stored_tokens and stored_tokens.is_expired() and not stored_tokens.refresh_token:
-            logger.info(f"Clearing expired tokens for {server_name} (no refresh token available)")
+        if (
+            stored_tokens
+            and stored_tokens.is_expired()
+            and not stored_tokens.refresh_token
+        ):
+            logger.info(
+                f"Clearing expired tokens for {server_name} (no refresh token available)"
+            )
             self.token_manager.delete_tokens(server_name)
             stored_tokens = None
 
