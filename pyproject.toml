@@ -1,6 +1,6 @@
 [project]
 name = "chuk-mcp-client-oauth"
-version = "0.3.2"
+version = "0.3.3"
 description = "A reusable OAuth 2.0 client library for MCP (Model Context Protocol) servers"
 readme = "README.md"
 requires-python = ">=3.10"
