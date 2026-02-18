@@ -94,7 +94,7 @@ dev-install:
 test:
 	@echo "Running tests..."
 	@if command -v uv >/dev/null 2>&1; then \
-		uv run pytest; \
+		uv sync --all-extras --dev --quiet && uv run python -m pytest; \
 	elif command -v pytest >/dev/null 2>&1; then \
 		pytest; \
 	else \
@@ -115,13 +115,13 @@ coverage-report:
 test-cov:
 	@echo "Running tests with coverage..."
 	@if command -v uv >/dev/null 2>&1; then \
-		uv run pytest --cov=src/chuk_mcp_client_oauth --cov-report=html --cov-report=term --cov-report=term-missing:skip-covered; \
+		uv sync --all-extras --dev --quiet && uv run python -m pytest --cov=src/chuk_mcp_client_oauth --cov-report=html --cov-report=term --cov-report=term-missing:skip-covered; \
 		exit_code=$$?; \
 		echo ""; \
 		echo "=========================="; \
 		echo "Coverage Summary:"; \
 		echo "=========================="; \
-		uv run coverage report --omit="tests/*" | tail -5; \
+		uv run python -m coverage report --omit="tests/*" | tail -5; \
 		echo ""; \
 		echo "HTML coverage report saved to: htmlcov/index.html"; \
 		exit $$exit_code; \

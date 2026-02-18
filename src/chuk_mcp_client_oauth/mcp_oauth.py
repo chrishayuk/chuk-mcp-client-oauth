@@ -37,7 +37,7 @@ class ProtectedResourceMetadata(BaseModel):
 
     resource: str  # Resource identifier
     authorization_servers: list[str]  # List of AS metadata URLs
-    scopes_supported: Optional[list[str]] = Field(default_factory=list)
+    scopes_supported: Optional[list[str]] = Field(default_factory=lambda: [])
     bearer_methods_supported: Optional[list[str]] = Field(
         default_factory=lambda: ["header"]
     )
